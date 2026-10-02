@@ -4,7 +4,7 @@
 //! chasmlol/2010-rust-rewrite-mashup, but uses SkyCraft's Y-up coordinate space
 //! and metre-ish block units.
 
-use glam::Vec3;
+pub use glam::Vec3;
 use std::collections::HashMap;
 
 pub const GHOST_FLAG: u32 = 1 << 2;
