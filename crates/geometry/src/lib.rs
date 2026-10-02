@@ -7,6 +7,7 @@
 pub use glam::Vec3;
 use std::collections::{HashMap, HashSet};
 
+pub const STAIR_HELPER_FLAG: u32 = 1 << 0;
 pub const GHOST_FLAG: u32 = 1 << 2;
 
 /// A face this upward is eligible to contribute grindable lips.
@@ -66,7 +67,7 @@ pub fn find_rails(source: &[Triangle]) -> RailResult {
     // be present in neighbouring region messages. Deduplicate before edge probing or
     // those copies can look like tiny seams/extra rail candidates.
     let mut seen = HashSet::new();
-    let mut tris = Vec::new();
+    let mut retained = Vec::new();
     for tri in source
         .iter()
         .copied()
@@ -77,9 +78,10 @@ pub fn find_rails(source: &[Triangle]) -> RailResult {
             .map(|v| v.to_array().map(|x| (x * 1000.0).round() as i32));
         key.sort();
         if seen.insert(key) {
-            tris.push(tri.p);
+            retained.push(tri);
         }
     }
+    let tris: Vec<[Vec3; 3]> = retained.iter().map(|t| t.p).collect();
 
     let grid = Grid::build(&tris);
     let mut probe = Probe {
@@ -93,7 +95,12 @@ pub fn find_rails(source: &[Triangle]) -> RailResult {
     let key = |v: Vec3| v.to_array().map(|x| (x * 1000.0).round() as i32);
     let mut edges: HashMap<([i32; 3], [i32; 3]), (Vec3, Vec3, Vec3, Vec3)> = HashMap::new();
 
-    for tri in &tris {
+    for (meta, tri) in retained.iter().zip(&tris) {
+        // Skyrim's invisible stair helpers are useful as smooth contact geometry,
+        // but their artificial side edges must never become visible grind rails.
+        if meta.flags & STAIR_HELPER_FLAG != 0 {
+            continue;
+        }
         let normal = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
         if normal.y <= UPWARD_Y {
             continue;
@@ -402,6 +409,18 @@ mod tests {
         t.flags = GHOST_FLAG;
         let result = find_rails(&[t]);
         assert_eq!(result.census.input_triangles, 0);
+        assert!(result.rails.is_empty());
+    }
+
+    #[test]
+    fn stair_helpers_can_block_probes_but_do_not_author_rails() {
+        let mut a = tri([-1.0, 0.0, -1.0], [-1.0, 0.0, 1.0], [1.0, 0.0, 1.0]);
+        let mut b = tri([-1.0, 0.0, -1.0], [1.0, 0.0, 1.0], [1.0, 0.0, -1.0]);
+        a.flags = STAIR_HELPER_FLAG;
+        b.flags = STAIR_HELPER_FLAG;
+        let result = find_rails(&[a, b]);
+        assert_eq!(result.census.input_triangles, 2);
+        assert_eq!(result.census.walkable_edges, 0);
         assert!(result.rails.is_empty());
     }
 }
