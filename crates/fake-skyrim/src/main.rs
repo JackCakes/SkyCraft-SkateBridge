@@ -115,6 +115,23 @@ mod fake {
             seq.store(s.wrapping_add(2), Ordering::Release);
         }
 
+        fn write_input(&self, mut input: proto::InputState) {
+            let state = unsafe { self.at::<proto::InputState>(proto::OFF_INPUT_STATE) };
+            let seq = unsafe { &*ptr::addr_of!((*state).seq).cast::<AtomicU32>() };
+            let s = seq.load(Ordering::Relaxed);
+            seq.store(s.wrapping_add(1), Ordering::Relaxed);
+            std::sync::atomic::fence(Ordering::Release);
+            input.seq = s.wrapping_add(1);
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    (&input as *const proto::InputState).cast::<u8>().add(4),
+                    state.cast::<u8>().add(4),
+                    size_of::<proto::InputState>() - 4,
+                );
+            }
+            seq.store(s.wrapping_add(2), Ordering::Release);
+        }
+
         fn read_host_state(&self) -> Option<proto::SkateState> {
             let state = unsafe { self.at::<proto::SkateState>(proto::OFF_SKATE_STATE) };
             for _ in 0..64 {
@@ -241,9 +258,19 @@ mod fake {
         println!("Fake Skyrim: requested synthetic Skate authority");
 
         let mut active_seen = false;
+        let mut camera_seen = false;
         let mut max_nudge = 0.0_f64;
+        let mut packet = 0_u32;
         for _ in 0..25 {
             mapping.heartbeat();
+            packet = packet.wrapping_add(1);
+            mapping.write_input(proto::InputState {
+                flags: proto::INPUT_VALID | proto::INPUT_KEYBOARD_FALLBACK,
+                left: [0, 32767],
+                packet,
+                frame_seconds: 0.1,
+                ..Default::default()
+            });
             if let Some(state) = mapping.read_host_state() {
                 if (state.flags & proto::HOST_ERROR) != 0 {
                     return Err(format!("host returned error {}", state.error_code));
@@ -255,6 +282,13 @@ mod fake {
                     }
                     let nudge = (state.x * state.x + (state.y - 1.0) * (state.y - 1.0) + state.z * state.z).sqrt();
                     max_nudge = max_nudge.max(nudge);
+                    if (state.flags & proto::HOST_CAMERA_VALID) != 0 {
+                        camera_seen = state.camera_pos.iter().all(|v| v.is_finite())
+                            && state.camera_forward.iter().all(|v| v.is_finite())
+                            && state.camera_up.iter().all(|v| v.is_finite())
+                            && state.fov_deg.is_finite()
+                            && state.fov_deg > 1.0;
+                    }
                 }
             }
             thread::sleep(Duration::from_millis(100));
@@ -262,11 +296,15 @@ mod fake {
         if !active_seen {
             return Err("host never entered synthetic authority".into());
         }
-        if !(0.40..=0.65).contains(&max_nudge) {
-            return Err(format!("synthetic nudge out of bounds: {max_nudge:.3} blocks"));
+        if !(0.80..=1.30).contains(&max_nudge) {
+            return Err(format!("synthetic input movement out of bounds: {max_nudge:.3} blocks"));
+        }
+        if !camera_seen {
+            return Err("host never published a valid diagnostic camera".into());
         }
 
         mapping.set_requested_mode(proto::MODE_MINECRAFT);
+        mapping.write_input(proto::InputState::default());
         let mut released = false;
         for _ in 0..10 {
             mapping.heartbeat();
@@ -287,7 +325,7 @@ mod fake {
             mapping.heartbeat();
             thread::sleep(Duration::from_millis(100));
         }
-        println!("Fake Skyrim: synthetic handoff + release passed; max nudge={max_nudge:.3}");
+        println!("Fake Skyrim: synthetic input + camera + release passed; max movement={max_nudge:.3}");
         Ok(())
     }
 }
