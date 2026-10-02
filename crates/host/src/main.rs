@@ -21,7 +21,8 @@ mod windows_host {
             Memory::{
                 FILE_MAP_ALL_ACCESS, MapViewOfFile, OpenFileMappingW, UnmapViewOfFile,
             },
-            Threading::{GetCurrentProcessId, GetTickCount64},
+            SystemInformation::GetTickCount64,
+            Threading::GetCurrentProcessId,
         },
     };
 
