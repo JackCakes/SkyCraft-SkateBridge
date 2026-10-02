@@ -159,6 +159,119 @@ mod windows_host {
         geometry::Vec3::new(x, y, z)
     }
 
+    /// Diagnostic movement used only to prove authority handoff before retail-backed
+    /// Skate physics is available. It makes one small, smooth forward nudge from
+    /// the activation point and then holds there. It deliberately does NOT pretend
+    /// to be Skate physics.
+    struct SyntheticController {
+        active: bool,
+        world_id: u32,
+        epoch: u32,
+        origin: [f64; 3],
+        yaw_deg: f32,
+        started: Instant,
+    }
+
+    impl SyntheticController {
+        const NUDGE_BLOCKS: f64 = 0.60;
+        const NUDGE_SECONDS: f64 = 1.50;
+
+        fn new() -> Self {
+            Self {
+                active: false,
+                world_id: 0,
+                epoch: 0,
+                origin: [0.0; 3],
+                yaw_deg: 0.0,
+                started: Instant::now(),
+            }
+        }
+
+        fn safe_sky(sky: &proto::SkyState) -> bool {
+            let blocked = proto::SKY_MENU_OPEN | proto::SKY_LOADING;
+            (sky.flags & proto::SKY_IN_GAME) != 0
+                && (sky.flags & blocked) == 0
+                && sky.x.is_finite()
+                && sky.y.is_finite()
+                && sky.z.is_finite()
+                && sky.yaw.is_finite()
+                && sky.world_id != 0
+        }
+
+        fn stop(&mut self, reason: &str) {
+            if self.active {
+                host_log!("SkyrimSkateHost: synthetic authority released ({reason})");
+            }
+            self.active = false;
+        }
+
+        fn update(&mut self, sky: &proto::SkyState) -> proto::SkateState {
+            let requested = sky.requested_mode == proto::MODE_SKATE;
+
+            if !requested {
+                self.stop("mode returned to Minecraft");
+            } else if !Self::safe_sky(sky) {
+                self.stop("Skyrim state is not safe");
+            } else if self.active
+                && (self.world_id != sky.world_id || self.epoch != sky.collision_epoch)
+            {
+                self.stop("world/epoch changed");
+            }
+
+            if requested && Self::safe_sky(sky) && !self.active {
+                self.active = true;
+                self.world_id = sky.world_id;
+                self.epoch = sky.collision_epoch;
+                self.origin = [sky.x, sky.y, sky.z];
+                self.yaw_deg = sky.yaw;
+                self.started = Instant::now();
+                host_log!(
+                    "SkyrimSkateHost: synthetic authority acquired world={:#x} epoch={} origin=({:.3},{:.3},{:.3}) yaw={:.1}",
+                    self.world_id,
+                    self.epoch,
+                    self.origin[0],
+                    self.origin[1],
+                    self.origin[2],
+                    self.yaw_deg
+                );
+            }
+
+            let mut state = proto::SkateState::default();
+            state.flags = proto::HOST_READY;
+            state.x = sky.x;
+            state.y = sky.y;
+            state.z = sky.z;
+            state.quat = [0.0, 0.0, 0.0, 1.0];
+            state.state_code = 0x5359_4E54; // "SYNT"
+
+            if self.active {
+                let t = (self.started.elapsed().as_secs_f64() / Self::NUDGE_SECONDS)
+                    .clamp(0.0, 1.0);
+                // Smoothstep avoids a position discontinuity when authority first transfers.
+                let u = t * t * (3.0 - 2.0 * t);
+                let yaw = (self.yaw_deg as f64).to_radians();
+                let dx = -yaw.sin();
+                let dz = yaw.cos();
+                state.x = self.origin[0] + dx * Self::NUDGE_BLOCKS * u;
+                state.y = self.origin[1];
+                state.z = self.origin[2] + dz * Self::NUDGE_BLOCKS * u;
+                state.velocity = if t < 1.0 {
+                    let du_dt = (6.0 * t * (1.0 - t)) / Self::NUDGE_SECONDS;
+                    [
+                        (dx * Self::NUDGE_BLOCKS * du_dt) as f32,
+                        0.0,
+                        (dz * Self::NUDGE_BLOCKS * du_dt) as f32,
+                    ]
+                } else {
+                    [0.0; 3]
+                };
+                state.flags |= proto::HOST_ACTIVE;
+            }
+
+            state
+        }
+    }
+
     struct Mapping {
         handle: HANDLE,
         base: NonNull<u8>,
@@ -399,6 +512,7 @@ mod windows_host {
             host_log!("SkyrimSkateHost: connected");
 
             let mut world = CollisionWorld::default();
+            let mut synthetic = SyntheticController::new();
             let mut last_report = Instant::now();
             let mut last_rail_build = Instant::now() - Duration::from_secs(2);
 
@@ -410,17 +524,9 @@ mod windows_host {
                     continue;
                 };
 
-                // Safe placeholder until retail-backed Skate Session is wired in:
-                // publish the current Skyrim pose but never move it.
-                let mut state = proto::SkateState::default();
-                state.flags = proto::HOST_READY;
-                state.x = sky.x;
-                state.y = sky.y;
-                state.z = sky.z;
-                state.quat = [0.0, 0.0, 0.0, 1.0];
-                if sky.requested_mode == proto::MODE_SKATE {
-                    state.flags |= proto::HOST_ACTIVE;
-                }
+                // Retail Skate data is not available yet. Use the intentionally tiny
+                // diagnostic controller to prove movement authority and hand-back safely.
+                let state = synthetic.update(&sky);
                 mapping.write_host_state(state);
 
                 match mapping.drain_collision() {
