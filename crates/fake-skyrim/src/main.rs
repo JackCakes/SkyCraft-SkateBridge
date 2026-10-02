@@ -132,6 +132,24 @@ mod fake {
             seq.store(s.wrapping_add(2), Ordering::Release);
         }
 
+        fn read_pose_frame(&self) -> Option<proto::PoseFrame> {
+            let state = unsafe { self.at::<proto::PoseFrame>(proto::OFF_POSE_FRAME) };
+            for _ in 0..64 {
+                let seq = unsafe { &*ptr::addr_of!((*state).seq).cast::<AtomicU32>() };
+                let s1 = seq.load(Ordering::Acquire);
+                if s1 & 1 != 0 {
+                    std::hint::spin_loop();
+                    continue;
+                }
+                let snapshot = unsafe { ptr::read_volatile(state) };
+                std::sync::atomic::fence(Ordering::Acquire);
+                if seq.load(Ordering::Relaxed) == s1 {
+                    return Some(snapshot);
+                }
+            }
+            None
+        }
+
         fn read_host_state(&self) -> Option<proto::SkateState> {
             let state = unsafe { self.at::<proto::SkateState>(proto::OFF_SKATE_STATE) };
             for _ in 0..64 {
@@ -259,6 +277,7 @@ mod fake {
 
         let mut active_seen = false;
         let mut camera_seen = false;
+        let mut pose_seen = false;
         let mut max_nudge = 0.0_f64;
         let mut packet = 0_u32;
         for _ in 0..25 {
@@ -271,6 +290,18 @@ mod fake {
                 frame_seconds: 0.1,
                 ..Default::default()
             });
+            if let Some(pose) = mapping.read_pose_frame() {
+                if (pose.flags & proto::POSE_VALID) != 0 {
+                    if pose.bone_count == 0 || pose.bone_count as usize > proto::MAX_POSE_BONES {
+                        return Err(format!("invalid pose bone count {}", pose.bone_count));
+                    }
+                    let bones = &pose.bones[..pose.bone_count as usize];
+                    if bones.iter().any(|b| b.name_hash == 0 || b.matrix.iter().any(|v| !v.is_finite())) {
+                        return Err("host returned invalid skeletal pose".into());
+                    }
+                    pose_seen = true;
+                }
+            }
             if let Some(state) = mapping.read_host_state() {
                 if (state.flags & proto::HOST_ERROR) != 0 {
                     return Err(format!("host returned error {}", state.error_code));
@@ -302,6 +333,9 @@ mod fake {
         if !camera_seen {
             return Err("host never published a valid diagnostic camera".into());
         }
+        if !pose_seen {
+            return Err("host never published a valid skeletal pose frame".into());
+        }
 
         mapping.set_requested_mode(proto::MODE_MINECRAFT);
         mapping.write_input(proto::InputState::default());
@@ -325,7 +359,7 @@ mod fake {
             mapping.heartbeat();
             thread::sleep(Duration::from_millis(100));
         }
-        println!("Fake Skyrim: synthetic input + camera + release passed; max movement={max_nudge:.3}");
+        println!("Fake Skyrim: synthetic input + camera + pose + release passed; max movement={max_nudge:.3}");
         Ok(())
     }
 }
