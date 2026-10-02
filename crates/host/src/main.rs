@@ -2,7 +2,11 @@
 compile_error!("skyrim-skate-host currently targets Windows only.");
 
 #[cfg(windows)]
+mod real_controller;
+
+#[cfg(windows)]
 mod windows_host {
+    use crate::real_controller::RealController;
     use skycraft_skate_geometry::{self as geometry, Triangle};
     use skycraft_skate_protocol as proto;
     use skycraft_skate_session_api as session;
@@ -764,6 +768,15 @@ mod windows_host {
 
     pub fn run() {
         init_log();
+        let real_data_root = std::env::var_os("SKYRIM_SKATE_DATA").map(PathBuf::from);
+        if let Some(root) = real_data_root.as_ref() {
+            host_log!(
+                "SkyrimSkateHost: real Skate backend armed from SKYRIM_SKATE_DATA={}",
+                root.display()
+            );
+        } else {
+            host_log!("SkyrimSkateHost: synthetic diagnostic backend (SKYRIM_SKATE_DATA not set)");
+        }
         host_log!("SkyrimSkateHost: waiting for {}", proto::MAPPING_NAME);
 
         loop {
@@ -783,6 +796,7 @@ mod windows_host {
 
             let mut world = CollisionWorld::default();
             let mut synthetic = SyntheticController::new();
+            let mut real = real_data_root.clone().map(RealController::new);
             let mut last_report = Instant::now();
             let mut last_rail_build = Instant::now() - Duration::from_secs(2);
             let mut last_prune_report = Instant::now() - Duration::from_secs(10);
@@ -826,11 +840,25 @@ mod windows_host {
                 };
                 let input = direct_input.or(shared_input);
 
-                // Retail Skate data is not available yet. Use the intentionally tiny
-                // diagnostic controller to prove movement authority and hand-back safely.
-                let state = synthetic.update(&sky, input.as_ref());
+                let (state, pose) = if let Some(real) = real.as_mut() {
+                    let output = real.update(
+                        &sky,
+                        input.as_ref(),
+                        &world.session_world,
+                        host_dt,
+                    );
+                    if let Some(notice) = real.take_notice() {
+                        host_log!("SkyrimSkateHost: {notice}");
+                    }
+                    output
+                } else {
+                    // No retail-derived data configured: retain the intentionally
+                    // bounded diagnostic controller used to test authority safely.
+                    let state = synthetic.update(&sky, input.as_ref());
+                    let pose = synthetic_pose_frame(&state, input.as_ref());
+                    (state, pose)
+                };
                 mapping.write_host_state(state);
-                let pose = synthetic_pose_frame(&state, input.as_ref());
                 mapping.write_pose_frame(&pose);
 
                 match mapping.drain_collision() {
