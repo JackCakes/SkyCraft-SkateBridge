@@ -325,6 +325,7 @@ impl api::SessionBackend for RealSkateSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use api::SessionBackend as _;
 
     #[test]
     fn missing_data_root_fails_before_session_load() {
