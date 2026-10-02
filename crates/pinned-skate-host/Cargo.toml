@@ -1,0 +1,17 @@
+[package]
+name = "skate-host-skycraft-pin"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "../../third_party/iw4l-skate/skate/crates/skate-host/src/lib.rs"
+
+[dependencies]
+bevy = { version = "0.19", default-features = false, features = ["std", "multi_threaded", "bevy_log"] }
+skate-core = { path = "../../third_party/iw4l-skate/skate/crates/skate-core" }
+skate-data = { path = "../../third_party/iw4l-skate/skate/crates/skate-data" }
+skate-net = { path = "../../third_party/iw4l-skate/skate/crates/skate-net" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+half = "2.7.1"
