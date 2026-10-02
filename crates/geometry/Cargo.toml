@@ -1,0 +1,7 @@
+[package]
+name = "skycraft-skate-geometry"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+glam = "0.30"
