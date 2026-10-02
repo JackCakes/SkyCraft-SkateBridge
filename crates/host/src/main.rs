@@ -137,6 +137,9 @@ mod windows_host {
         dirty: bool,
         triangle_count: usize,
         rail_count: usize,
+        revision: u64,
+        session_triangles: Vec<[[f32; 3]; 3]>,
+        session_rails: Vec<Vec<[f32; 3]>>,
     }
 
     impl CollisionWorld {
@@ -147,6 +150,9 @@ mod windows_host {
             self.dirty = true;
             self.triangle_count = 0;
             self.rail_count = 0;
+            self.revision = self.revision.wrapping_add(1);
+            self.session_triangles.clear();
+            self.session_rails.clear();
         }
 
         fn replace_region(
@@ -221,7 +227,22 @@ mod windows_host {
                 }
             }
             let result = geometry::find_rails(&input);
-            self.rail_count = result.rails.len();
+
+            // Retain the exact working set in the same shape the real Skate
+            // CollisionBuilder consumes. MC-space is already metres-ish and Y-up,
+            // so the eventual session adapter only needs the single documented
+            // basis/scale conversion rather than another geometry extraction pass.
+            self.session_triangles = input
+                .iter()
+                .map(|tri| tri.p.map(|p| p.to_array()))
+                .collect();
+            self.session_rails = result
+                .rails
+                .iter()
+                .map(|rail| rail.iter().map(|p| p.to_array()).collect())
+                .collect();
+            self.rail_count = self.session_rails.len();
+            self.revision = self.revision.wrapping_add(1);
             self.dirty = false;
             result
         }
@@ -836,12 +857,14 @@ mod windows_host {
                 if last_report.elapsed() >= Duration::from_secs(2) {
                     if let Some(input) = input.as_ref() {
                         host_log!(
-                            "SkyrimSkateHost: world={:#x} epoch={} mode={} regions={} triangles={} rails={} input={} packet={} buttons=0x{:04x} left=({}, {}) right=({}, {}) triggers=({}, {})",
+                            "SkyrimSkateHost: world={:#x} epoch={} mode={} rev={} regions={} triangles={} prepared={} rails={} input={} packet={} buttons=0x{:04x} left=({}, {}) right=({}, {}) triggers=({}, {})",
                             sky.world_id,
                             sky.collision_epoch,
                             sky.requested_mode,
+                            world.revision,
                             world.regions.len(),
                             world.triangle_count,
+                            world.session_triangles.len(),
                             world.rail_count,
                             input_source,
                             input.packet,
@@ -855,12 +878,14 @@ mod windows_host {
                         );
                     } else {
                         host_log!(
-                            "SkyrimSkateHost: world={:#x} epoch={} mode={} regions={} triangles={} rails={} input=none",
+                            "SkyrimSkateHost: world={:#x} epoch={} mode={} rev={} regions={} triangles={} prepared={} rails={} input=none",
                             sky.world_id,
                             sky.collision_epoch,
                             sky.requested_mode,
+                            world.revision,
                             world.regions.len(),
                             world.triangle_count,
+                            world.session_triangles.len(),
                             world.rail_count
                         );
                     }
