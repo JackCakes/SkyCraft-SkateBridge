@@ -166,6 +166,10 @@ mod windows_host {
         dirty: bool,
         triangle_count: usize,
         rail_count: usize,
+        floor_up_count: usize,
+        floor_down_count: usize,
+        terrain_up_count: usize,
+        terrain_down_count: usize,
         session_world: session::WorldGeometry,
     }
 
@@ -177,6 +181,10 @@ mod windows_host {
             self.dirty = true;
             self.triangle_count = 0;
             self.rail_count = 0;
+            self.floor_up_count = 0;
+            self.floor_down_count = 0;
+            self.terrain_up_count = 0;
+            self.terrain_down_count = 0;
             self.session_world.revision = self.session_world.revision.wrapping_add(1);
             self.session_world.triangles.clear();
             self.session_world.rails.clear();
@@ -253,6 +261,31 @@ mod windows_host {
                     });
                 }
             }
+            // Portable Skate collision is one-sided. Count near-horizontal face
+            // orientation now so a bad Havok winding shows up in telemetry before
+            // the real board physics is asked to stand on it.
+            const TERRAIN_FLAG: u32 = 1 << 3;
+            self.floor_up_count = 0;
+            self.floor_down_count = 0;
+            self.terrain_up_count = 0;
+            self.terrain_down_count = 0;
+            for tri in &input {
+                let n = (tri.p[1] - tri.p[0])
+                    .cross(tri.p[2] - tri.p[0])
+                    .normalize_or_zero();
+                if n.y >= 0.65 {
+                    self.floor_up_count += 1;
+                    if tri.flags & TERRAIN_FLAG != 0 {
+                        self.terrain_up_count += 1;
+                    }
+                } else if n.y <= -0.65 {
+                    self.floor_down_count += 1;
+                    if tri.flags & TERRAIN_FLAG != 0 {
+                        self.terrain_down_count += 1;
+                    }
+                }
+            }
+
             let result = geometry::find_rails(&input);
 
             // Retain the exact working set in the same shape the real Skate
@@ -871,12 +904,16 @@ mod windows_host {
                 if world.dirty && last_rail_build.elapsed() >= Duration::from_secs(1) {
                     let rails = world.rebuild_rails();
                     host_log!(
-                        "SkyrimSkateHost: rail scan tris={} edges={} lips={} runs={} rails={}",
+                        "SkyrimSkateHost: rail scan tris={} edges={} lips={} runs={} rails={} floors_up={} floors_down={} terrain_up={} terrain_down={}",
                         rails.census.input_triangles,
                         rails.census.walkable_edges,
                         rails.census.lips,
                         rails.census.runs,
-                        rails.census.rails
+                        rails.census.rails,
+                        world.floor_up_count,
+                        world.floor_down_count,
+                        world.terrain_up_count,
+                        world.terrain_down_count
                     );
                     last_rail_build = Instant::now();
                 }
