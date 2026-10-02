@@ -767,6 +767,35 @@ mod windows_host {
         }
     }
 
+    fn start_real_preload(data_root: PathBuf) {
+        let shown = data_root.display().to_string();
+        match thread::Builder::new()
+            .name("skyrim-skate-preload".into())
+            .stack_size(32 * 1024 * 1024)
+            .spawn(move || {
+                let started = Instant::now();
+                let adapter = RealSkateSession::new(data_root);
+                match adapter.preload() {
+                    Ok(()) => host_log!(
+                        "SkyrimSkateHost: real Skate animation banks preloaded in {} ms",
+                        started.elapsed().as_millis()
+                    ),
+                    Err(error) => host_log!(
+                        "SkyrimSkateHost: real Skate preload failed for {}: {}",
+                        shown,
+                        error
+                    ),
+                }
+            })
+        {
+            Ok(_handle) => {
+                // Detached intentionally: immutable animation preload may continue while
+                // the host waits for Skyrim. The process lifetime bounds the worker.
+            }
+            Err(error) => host_log!("SkyrimSkateHost: could not start Skate preload thread: {error}"),
+        }
+    }
+
     fn start_process_heartbeat() -> Option<(Arc<AtomicBool>, thread::JoinHandle<()>)> {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = Arc::clone(&stop);
@@ -827,6 +856,9 @@ mod windows_host {
                 None
             }
         };
+        if let Some(root) = real_data_root.as_ref() {
+            start_real_preload(root.clone());
+        }
         host_log!("SkyrimSkateHost: waiting for {}", proto::MAPPING_NAME);
 
         loop {
