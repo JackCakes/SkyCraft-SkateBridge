@@ -6,4 +6,4 @@ publish = false
 
 [dependencies]
 skycraft-skate-session-api.workspace = true
-skate-host = { path = "../../third_party/iw4l-skate/skate/crates/skate-host" }
+skate-host = { package = "skate-host-skycraft-pin", path = "../pinned-skate-host" }
