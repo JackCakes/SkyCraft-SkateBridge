@@ -58,7 +58,7 @@ mod windows_host {
     }
 
     fn log_line(args: std::fmt::Arguments<'_>) {
-        host_log!("{args}");
+        eprintln!("{args}");
         if let Some(lock) = LOG_FILE.get() {
             if let Ok(mut slot) = lock.lock() {
                 if let Some(file) = slot.as_mut() {
