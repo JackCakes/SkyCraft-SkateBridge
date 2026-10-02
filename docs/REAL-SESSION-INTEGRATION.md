@@ -56,3 +56,39 @@ The real backend must return an error rather than emit a non-finite pose.
 Skyrim authority remains outside the backend: host loss, bad transforms,
 menus/loading, death, scripted takeover and world changes all fall back through
 the already-tested SkyCraft handoff.
+
+
+## Runtime loading and liveness
+
+The integrated host keeps the process heartbeat independent from the real Skate session load.
+This matters because `Session::new` may decode/load enough private data to take longer than
+the normal host timeout. A dedicated heartbeat thread keeps Skyrim from falsely treating that
+startup work as a host crash.
+
+When real data is available, immutable Skate animation banks are also preloaded on a dedicated
+32 MiB-stack worker before the first F6 activation, following the IW4L adapter's preload pattern.
+
+## Streaming collision updates
+
+The first session still starts from a complete bounded collision working set. After activation,
+later Skyrim collision revisions are prepared on a dedicated `skyrim-skate-collision` worker:
+
+1. duplicate region refreshes are ignored,
+2. queued world revisions are collapsed to the newest one,
+3. `CollisionBuilder::build` runs off the simulation step path,
+4. the finished `PreparedCollision` is swapped into the live Session,
+5. the simulation keeps stepping while newer collision is being prepared.
+
+This mirrors the reference mashup's background block-collision rebuild instead of rebuilding
+the Skate collision world synchronously every time SkyCraft streams a region.
+
+## Data discovery
+
+The host accepts either:
+
+- `SKYRIM_SKATE_DATA=<prepared root>`, or
+- a `skate-data/` folder beside `SkyrimSkateHost.exe`.
+
+Both the converter output root and its nested `assets/` folder are accepted. The data layout
+is validated before the real backend is armed; incomplete data falls back to the synthetic
+diagnostic backend with a clear log message.
