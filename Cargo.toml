@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/protocol",
+    "crates/geometry",
     "crates/host",
 ]
 
@@ -11,3 +12,4 @@ version = "0.0.1"
 
 [workspace.dependencies]
 skycraft-skate-protocol = { path = "crates/protocol" }
+skycraft-skate-geometry = { path = "crates/geometry" }
