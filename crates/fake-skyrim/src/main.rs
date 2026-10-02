@@ -7,7 +7,7 @@ mod fake {
     use std::{
         mem::size_of,
         ptr::{self, NonNull},
-        sync::atomic::{AtomicU64, Ordering},
+        sync::atomic::{AtomicU32, AtomicU64, Ordering},
         thread,
         time::Duration,
     };
@@ -92,6 +92,45 @@ mod fake {
                 (&*ptr::addr_of_mut!(header.skyrim_heartbeat_ms).cast::<AtomicU64>())
                     .store(GetTickCount64(), Ordering::Release);
             }
+        }
+
+        fn host_connected(&self) -> bool {
+            let header = unsafe { &*self.at::<proto::Header>(proto::OFF_HEADER) };
+            unsafe {
+                (&*ptr::addr_of!(header.host_pid).cast::<AtomicU32>())
+                    .load(Ordering::Acquire)
+                    != 0
+            }
+        }
+
+        fn set_requested_mode(&self, mode: u32) {
+            let state = unsafe { self.at::<proto::SkyState>(proto::OFF_SKY_STATE) };
+            let seq = unsafe { &*ptr::addr_of!((*state).seq).cast::<AtomicU32>() };
+            let s = seq.load(Ordering::Relaxed);
+            seq.store(s.wrapping_add(1), Ordering::Relaxed);
+            std::sync::atomic::fence(Ordering::Release);
+            unsafe {
+                (*state).requested_mode = mode;
+            }
+            seq.store(s.wrapping_add(2), Ordering::Release);
+        }
+
+        fn read_host_state(&self) -> Option<proto::SkateState> {
+            let state = unsafe { self.at::<proto::SkateState>(proto::OFF_SKATE_STATE) };
+            for _ in 0..64 {
+                let seq = unsafe { &*ptr::addr_of!((*state).seq).cast::<AtomicU32>() };
+                let s1 = seq.load(Ordering::Acquire);
+                if s1 & 1 != 0 {
+                    std::hint::spin_loop();
+                    continue;
+                }
+                let snapshot = unsafe { ptr::read_volatile(state) };
+                std::sync::atomic::fence(Ordering::Acquire);
+                if seq.load(Ordering::Relaxed) == s1 {
+                    return Some(snapshot);
+                }
+            }
+            None
         }
 
         fn push(&self, kind: u32, payload: &[u8]) {
@@ -183,11 +222,72 @@ mod fake {
         let mapping = Mapping::create()?;
         mapping.init();
         mapping.publish_platform();
-        println!("Fake Skyrim: published 2-triangle platform; holding mapping for 5 seconds");
-        for _ in 0..50 {
+        println!("Fake Skyrim: published 2-triangle platform");
+
+        let mut connected = false;
+        for _ in 0..30 {
+            mapping.heartbeat();
+            if mapping.host_connected() {
+                connected = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        if !connected {
+            return Err("host did not announce itself".into());
+        }
+
+        mapping.set_requested_mode(proto::MODE_SKATE);
+        println!("Fake Skyrim: requested synthetic Skate authority");
+
+        let mut active_seen = false;
+        let mut max_nudge = 0.0_f64;
+        for _ in 0..25 {
+            mapping.heartbeat();
+            if let Some(state) = mapping.read_host_state() {
+                if (state.flags & proto::HOST_ERROR) != 0 {
+                    return Err(format!("host returned error {}", state.error_code));
+                }
+                if (state.flags & proto::HOST_ACTIVE) != 0 {
+                    active_seen = true;
+                    if !state.x.is_finite() || !state.y.is_finite() || !state.z.is_finite() {
+                        return Err("host returned non-finite synthetic pose".into());
+                    }
+                    let nudge = (state.x * state.x + (state.y - 1.0) * (state.y - 1.0) + state.z * state.z).sqrt();
+                    max_nudge = max_nudge.max(nudge);
+                }
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        if !active_seen {
+            return Err("host never entered synthetic authority".into());
+        }
+        if !(0.40..=0.65).contains(&max_nudge) {
+            return Err(format!("synthetic nudge out of bounds: {max_nudge:.3} blocks"));
+        }
+
+        mapping.set_requested_mode(proto::MODE_MINECRAFT);
+        let mut released = false;
+        for _ in 0..10 {
+            mapping.heartbeat();
+            if let Some(state) = mapping.read_host_state() {
+                if (state.flags & proto::HOST_ACTIVE) == 0 {
+                    released = true;
+                    break;
+                }
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        if !released {
+            return Err("host did not release synthetic authority".into());
+        }
+
+        // Keep the mapping alive long enough for the existing rail/collision smoke checks.
+        for _ in 0..20 {
             mapping.heartbeat();
             thread::sleep(Duration::from_millis(100));
         }
+        println!("Fake Skyrim: synthetic handoff + release passed; max nudge={max_nudge:.3}");
         Ok(())
     }
 }
