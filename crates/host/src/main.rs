@@ -80,6 +80,12 @@ mod windows_host {
         Region(proto::CollisionRegion, Vec<proto::CollisionTri>),
     }
 
+    // SkyCraft collision regions are 8x8x8 blocks. Keep a bounded local working
+    // set around the skater instead of retaining every region ever visited.
+    const REGION_BLOCKS: f64 = 8.0;
+    const KEEP_RADIUS_XZ_REGIONS: i32 = 7; // ~56 blocks each horizontal direction
+    const KEEP_RADIUS_Y_REGIONS: i32 = 4;  // ~32 blocks up/down
+
     #[derive(Default)]
     struct CollisionWorld {
         epoch: u32,
@@ -132,6 +138,29 @@ mod windows_host {
             }
             self.triangle_count += self.regions.get(&key).map_or(0, Vec::len);
             self.dirty = true;
+        }
+
+        fn prune_around(&mut self, centre: [f64; 3]) -> usize {
+            if !centre.iter().all(|v| v.is_finite()) {
+                return 0;
+            }
+            let cr = (
+                (centre[0] / REGION_BLOCKS).floor() as i32,
+                (centre[1] / REGION_BLOCKS).floor() as i32,
+                (centre[2] / REGION_BLOCKS).floor() as i32,
+            );
+            let before_regions = self.regions.len();
+            let before_tris = self.triangle_count;
+            self.regions.retain(|&(rx, ry, rz), _| {
+                (rx - cr.0).abs() <= KEEP_RADIUS_XZ_REGIONS
+                    && (rz - cr.2).abs() <= KEEP_RADIUS_XZ_REGIONS
+                    && (ry - cr.1).abs() <= KEEP_RADIUS_Y_REGIONS
+            });
+            if self.regions.len() != before_regions {
+                self.triangle_count = self.regions.values().map(Vec::len).sum();
+                self.dirty = true;
+            }
+            before_tris.saturating_sub(self.triangle_count)
         }
 
         fn rebuild_rails(&mut self) -> geometry::RailResult {
@@ -604,6 +633,7 @@ mod windows_host {
             let mut synthetic = SyntheticController::new();
             let mut last_report = Instant::now();
             let mut last_rail_build = Instant::now() - Duration::from_secs(2);
+            let mut last_prune_report = Instant::now() - Duration::from_secs(10);
 
             loop {
                 mapping.heartbeat();
@@ -618,6 +648,22 @@ mod windows_host {
                 let input = mapping.read_input_state();
                 let state = synthetic.update(&sky, input.as_ref());
                 mapping.write_host_state(state);
+
+                let centre = if (state.flags & proto::HOST_ACTIVE) != 0 {
+                    [state.x, state.y, state.z]
+                } else {
+                    [sky.x, sky.y, sky.z]
+                };
+                let pruned_tris = world.prune_around(centre);
+                if pruned_tris > 0 && last_prune_report.elapsed() >= Duration::from_secs(2) {
+                    host_log!(
+                        "SkyrimSkateHost: pruned {} distant collision triangles; retained regions={} triangles={}",
+                        pruned_tris,
+                        world.regions.len(),
+                        world.triangle_count
+                    );
+                    last_prune_report = Instant::now();
+                }
 
                 match mapping.drain_collision() {
                     Ok(events) => {
