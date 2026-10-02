@@ -170,6 +170,7 @@ mod windows_host {
         origin: [f64; 3],
         yaw_deg: f32,
         started: Instant,
+        blocked_until_release: bool,
     }
 
     impl SyntheticController {
@@ -184,6 +185,7 @@ mod windows_host {
                 origin: [0.0; 3],
                 yaw_deg: 0.0,
                 started: Instant::now(),
+                blocked_until_release: false,
             }
         }
 
@@ -198,27 +200,29 @@ mod windows_host {
                 && sky.world_id != 0
         }
 
-        fn stop(&mut self, reason: &str) {
+        fn stop(&mut self, reason: &str, block_until_release: bool) {
             if self.active {
                 host_log!("SkyrimSkateHost: synthetic authority released ({reason})");
             }
             self.active = false;
+            self.blocked_until_release |= block_until_release;
         }
 
         fn update(&mut self, sky: &proto::SkyState) -> proto::SkateState {
             let requested = sky.requested_mode == proto::MODE_SKATE;
 
             if !requested {
-                self.stop("mode returned to Minecraft");
-            } else if !Self::safe_sky(sky) {
-                self.stop("Skyrim state is not safe");
+                self.stop("mode returned to Minecraft", false);
+                self.blocked_until_release = false;
+            } else if self.active && !Self::safe_sky(sky) {
+                self.stop("Skyrim state is not safe", true);
             } else if self.active
                 && (self.world_id != sky.world_id || self.epoch != sky.collision_epoch)
             {
-                self.stop("world/epoch changed");
+                self.stop("world/epoch changed", true);
             }
 
-            if requested && Self::safe_sky(sky) && !self.active {
+            if requested && Self::safe_sky(sky) && !self.active && !self.blocked_until_release {
                 self.active = true;
                 self.world_id = sky.world_id;
                 self.epoch = sky.collision_epoch;
