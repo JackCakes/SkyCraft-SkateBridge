@@ -32,6 +32,49 @@ mod windows_host {
         },
     };
 
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct XInputGamepad {
+        buttons: u16,
+        left_trigger: u8,
+        right_trigger: u8,
+        left_x: i16,
+        left_y: i16,
+        right_x: i16,
+        right_y: i16,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct XInputStateRaw {
+        packet: u32,
+        gamepad: XInputGamepad,
+    }
+
+    #[link(name = "Xinput1_4")]
+    unsafe extern "system" {
+        fn XInputGetState(user_index: u32, state: *mut XInputStateRaw) -> u32;
+    }
+
+    fn poll_xinput(frame_seconds: f32) -> Option<proto::InputState> {
+        for user in 0..4 {
+            let mut state = XInputStateRaw::default();
+            if unsafe { XInputGetState(user, &mut state) } == 0 {
+                return Some(proto::InputState {
+                    flags: proto::INPUT_VALID,
+                    buttons: state.gamepad.buttons,
+                    triggers: [state.gamepad.left_trigger, state.gamepad.right_trigger],
+                    left: [state.gamepad.left_x, state.gamepad.left_y],
+                    right: [state.gamepad.right_x, state.gamepad.right_y],
+                    packet: state.packet,
+                    frame_seconds: frame_seconds.clamp(0.0, 0.1),
+                    ..Default::default()
+                });
+            }
+        }
+        None
+    }
+
     static LOG_FILE: OnceLock<Mutex<Option<File>>> = OnceLock::new();
 
     fn log_path() -> PathBuf {
@@ -695,6 +738,9 @@ mod windows_host {
             let mut last_report = Instant::now();
             let mut last_rail_build = Instant::now() - Duration::from_secs(2);
             let mut last_prune_report = Instant::now() - Duration::from_secs(10);
+            let mut last_sky_seq = 0_u32;
+            let mut last_sky_update = Instant::now();
+            let mut last_host_step = Instant::now();
 
             loop {
                 mapping.heartbeat();
@@ -704,9 +750,36 @@ mod windows_host {
                     continue;
                 };
 
+                if sky.seq != last_sky_seq {
+                    last_sky_seq = sky.seq;
+                    last_sky_update = Instant::now();
+                }
+                let now_step = Instant::now();
+                let host_dt = now_step.duration_since(last_host_step).as_secs_f32().clamp(0.0, 0.1);
+                last_host_step = now_step;
+
+                // Prefer a real XInput controller when Skyrim is actively producing
+                // frames. If Skyrim is backgrounded/stalled, direct controller input
+                // is neutralized so Alt-Tab cannot move the skater behind the user's back.
+                let shared_input = mapping.read_input_state();
+                let direct_input = if sky.requested_mode == proto::MODE_SKATE
+                    && last_sky_update.elapsed() <= Duration::from_millis(250)
+                {
+                    poll_xinput(host_dt)
+                } else {
+                    None
+                };
+                let input_source = if direct_input.is_some() {
+                    "xinput"
+                } else if shared_input.is_some() {
+                    "bridge"
+                } else {
+                    "none"
+                };
+                let input = direct_input.or(shared_input);
+
                 // Retail Skate data is not available yet. Use the intentionally tiny
                 // diagnostic controller to prove movement authority and hand-back safely.
-                let input = mapping.read_input_state();
                 let state = synthetic.update(&sky, input.as_ref());
                 mapping.write_host_state(state);
                 let pose = synthetic_pose_frame(&state, input.as_ref());
@@ -763,13 +836,14 @@ mod windows_host {
                 if last_report.elapsed() >= Duration::from_secs(2) {
                     if let Some(input) = input.as_ref() {
                         host_log!(
-                            "SkyrimSkateHost: world={:#x} epoch={} mode={} regions={} triangles={} rails={} input_packet={} buttons=0x{:04x} left=({}, {}) right=({}, {}) triggers=({}, {})",
+                            "SkyrimSkateHost: world={:#x} epoch={} mode={} regions={} triangles={} rails={} input={} packet={} buttons=0x{:04x} left=({}, {}) right=({}, {}) triggers=({}, {})",
                             sky.world_id,
                             sky.collision_epoch,
                             sky.requested_mode,
                             world.regions.len(),
                             world.triangle_count,
                             world.rail_count,
+                            input_source,
                             input.packet,
                             input.buttons,
                             input.left[0],
@@ -781,7 +855,7 @@ mod windows_host {
                         );
                     } else {
                         host_log!(
-                            "SkyrimSkateHost: world={:#x} epoch={} mode={} regions={} triangles={} rails={} input=unavailable",
+                            "SkyrimSkateHost: world={:#x} epoch={} mode={} regions={} triangles={} rails={} input=none",
                             sky.world_id,
                             sky.collision_epoch,
                             sky.requested_mode,
