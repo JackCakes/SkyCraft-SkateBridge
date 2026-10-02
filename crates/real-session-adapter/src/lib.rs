@@ -116,6 +116,10 @@ impl RealSkateSession {
                 && Self::revision_is_newer(self.requested_revision, revision)
     }
 
+    fn prefer_newer_revision(current: Option<u64>, candidate: u64) -> bool {
+        current.is_none_or(|revision| Self::revision_is_newer(candidate, revision))
+    }
+
     fn ensure_collision_worker(&mut self) -> Result<(), String> {
         if self.build_send.is_some() {
             return Ok(());
@@ -199,7 +203,16 @@ impl RealSkateSession {
         let mut newest = None;
         loop {
             match receive.try_recv() {
-                Ok(result) => newest = Some(result),
+                Ok((revision, prepared)) => {
+                    if self.prepared_revision_is_useful(revision)
+                        && Self::prefer_newer_revision(
+                            newest.as_ref().map(|(revision, _)| *revision),
+                            revision,
+                        )
+                    {
+                        newest = Some((revision, prepared));
+                    }
+                }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
                     return Err("Skate collision worker disconnected".into());
@@ -210,9 +223,6 @@ impl RealSkateSession {
         let Some((revision, prepared)) = newest else {
             return Ok(());
         };
-        if !self.prepared_revision_is_useful(revision) {
-            return Ok(());
-        }
         let prepared = prepared?;
         let session = self
             .session
@@ -399,5 +409,18 @@ mod tests {
         assert!(adapter.prepared_revision_is_useful(0));
         assert!(adapter.prepared_revision_is_useful(1));
         assert!(!adapter.prepared_revision_is_useful(u64::MAX - 1));
+    }
+
+    #[test]
+    fn prepared_drain_prefers_revision_not_arrival_order() {
+        assert!(RealSkateSession::prefer_newer_revision(None, 12));
+        assert!(!RealSkateSession::prefer_newer_revision(Some(12), 11));
+        assert!(RealSkateSession::prefer_newer_revision(Some(11), 12));
+    }
+
+    #[test]
+    fn prepared_drain_revision_choice_handles_wrap() {
+        assert!(RealSkateSession::prefer_newer_revision(Some(u64::MAX), 0));
+        assert!(!RealSkateSession::prefer_newer_revision(Some(0), u64::MAX));
     }
 }
