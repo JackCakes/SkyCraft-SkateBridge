@@ -5,6 +5,7 @@ members = [
     "crates/geometry",
     "crates/session-api",
     "crates/real-session-adapter",
+    "crates/pinned-skate-host",
     "crates/fake-skyrim",
     "crates/host",
 ]
