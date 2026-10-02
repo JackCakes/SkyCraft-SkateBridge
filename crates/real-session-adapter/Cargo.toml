@@ -1,0 +1,9 @@
+[package]
+name = "skycraft-skate-real-session"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+skycraft-skate-session-api.workspace = true
+skate-host = { path = "../../third_party/iw4l-skate/skate/crates/skate-host" }
