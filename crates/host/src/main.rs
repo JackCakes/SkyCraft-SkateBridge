@@ -105,8 +105,8 @@ mod windows_host {
         }
     }
 
-    fn glam_vec(x: f32, y: f32, z: f32) -> glam::Vec3 {
-        glam::Vec3::new(x, y, z)
+    fn glam_vec(x: f32, y: f32, z: f32) -> geometry::Vec3 {
+        geometry::Vec3::new(x, y, z)
     }
 
     struct Mapping {
