@@ -177,7 +177,7 @@ mod windows_host {
             self.dirty = true;
             self.triangle_count = 0;
             self.rail_count = 0;
-            self.session_world.session_world.revision = self.session_world.session_world.revision.wrapping_add(1);
+            self.session_world.revision = self.session_world.revision.wrapping_add(1);
             self.session_world.triangles.clear();
             self.session_world.rails.clear();
         }
@@ -269,7 +269,7 @@ mod windows_host {
                 .map(|rail| rail.iter().map(|p| p.to_array()).collect())
                 .collect();
             self.rail_count = self.session_world.rails.len();
-            self.session_world.session_world.revision = self.session_world.session_world.revision.wrapping_add(1);
+            self.session_world.revision = self.session_world.revision.wrapping_add(1);
             self.dirty = false;
             result
         }
