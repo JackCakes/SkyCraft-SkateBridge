@@ -7,7 +7,7 @@ use core::mem::size_of;
 
 pub const MAPPING_NAME: &str = r"Local\SkyCraftSkate_v1";
 pub const MAGIC: u32 = 0x4B53_4353; // bytes: "SCSK"
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 pub const OFF_HEADER: usize = 0x0000;
 pub const OFF_SKY_STATE: usize = 0x0100;
@@ -16,12 +16,14 @@ pub const OFF_INPUT_STATE: usize = 0x0300;
 pub const OFF_COLLISION_RING: usize = 0x1000;
 
 pub const COLLISION_RING_BYTES: usize = 16 << 20;
+pub const OFF_POSE_FRAME: usize = OFF_COLLISION_RING + COLLISION_RING_BYTES;
+pub const POSE_FRAME_BYTES: usize = 0x4000;
 pub const COLLISION_RING_HEAD_OFF: usize = 0x00;
 pub const COLLISION_RING_TAIL_OFF: usize = 0x40;
 pub const COLLISION_RING_DATA_OFF: usize = 0x80;
 pub const COLLISION_RING_DATA_BYTES: usize = COLLISION_RING_BYTES - COLLISION_RING_DATA_OFF;
 
-pub const MAPPING_BYTES: usize = OFF_COLLISION_RING + COLLISION_RING_BYTES;
+pub const MAPPING_BYTES: usize = OFF_POSE_FRAME + POSE_FRAME_BYTES;
 
 pub const SKY_IN_GAME: u32 = 1 << 0;
 pub const SKY_MENU_OPEN: u32 = 1 << 1;
@@ -41,6 +43,9 @@ pub const HOST_CAMERA_VALID: u32 = 1 << 7;
 
 pub const INPUT_VALID: u32 = 1 << 0;
 pub const INPUT_KEYBOARD_FALLBACK: u32 = 1 << 1;
+
+pub const POSE_VALID: u32 = 1 << 0;
+pub const MAX_POSE_BONES: usize = 128;
 
 pub const COL_PAD: u32 = 0;
 pub const COL_CLEAR: u32 = 1;
@@ -134,6 +139,48 @@ pub struct InputState {
     pub reserved: [u32; 9],
 }
 const _: [(); 64] = [(); size_of::<InputState>()];
+
+/// One named Skate bone transform. Names are represented by stable FNV-1a
+/// hashes so high-rate pose frames never need to copy variable-length strings.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct BonePose {
+    pub name_hash: u64,
+    /// Column-major 4x4 transform in the Skate session's pose space.
+    pub matrix: [f32; 16],
+}
+const _: [(); 72] = [(); size_of::<BonePose>()];
+
+/// High-rate host -> Skyrim animation pose, separate from SkateState so the
+/// root/camera control path stays tiny and robust.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct PoseFrame {
+    /// Seqlock: odd while host writes, even when stable.
+    pub seq: u32,
+    pub flags: u32,
+    pub tick: u64,
+    pub bone_count: u32,
+    /// Changes if the ordered bone-name set changes.
+    pub name_set_id: u32,
+    pub reserved: [u32; 2],
+    pub bones: [BonePose; MAX_POSE_BONES],
+}
+impl Default for PoseFrame {
+    fn default() -> Self {
+        Self {
+            seq: 0,
+            flags: 0,
+            tick: 0,
+            bone_count: 0,
+            name_set_id: 0,
+            reserved: [0; 2],
+            bones: [BonePose::default(); MAX_POSE_BONES],
+        }
+    }
+}
+const _: [(); 9248] = [(); size_of::<PoseFrame>()];
+const _: () = assert!(size_of::<PoseFrame>() <= POSE_FRAME_BYTES);
 
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug)]
