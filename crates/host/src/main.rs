@@ -649,22 +649,6 @@ mod windows_host {
                 let state = synthetic.update(&sky, input.as_ref());
                 mapping.write_host_state(state);
 
-                let centre = if (state.flags & proto::HOST_ACTIVE) != 0 {
-                    [state.x, state.y, state.z]
-                } else {
-                    [sky.x, sky.y, sky.z]
-                };
-                let pruned_tris = world.prune_around(centre);
-                if pruned_tris > 0 && last_prune_report.elapsed() >= Duration::from_secs(2) {
-                    host_log!(
-                        "SkyrimSkateHost: pruned {} distant collision triangles; retained regions={} triangles={}",
-                        pruned_tris,
-                        world.regions.len(),
-                        world.triangle_count
-                    );
-                    last_prune_report = Instant::now();
-                }
-
                 match mapping.drain_collision() {
                     Ok(events) => {
                         for event in events {
@@ -682,6 +666,22 @@ mod windows_host {
                         }
                     }
                     Err(e) => host_log!("SkyrimSkateHost: collision error: {e}"),
+                }
+
+                let centre = if (state.flags & proto::HOST_ACTIVE) != 0 {
+                    [state.x, state.y, state.z]
+                } else {
+                    [sky.x, sky.y, sky.z]
+                };
+                let pruned_tris = world.prune_around(centre);
+                if pruned_tris > 0 && last_prune_report.elapsed() >= Duration::from_secs(2) {
+                    host_log!(
+                        "SkyrimSkateHost: pruned {} distant collision triangles; retained regions={} triangles={}",
+                        pruned_tris,
+                        world.regions.len(),
+                        world.triangle_count
+                    );
+                    last_prune_report = Instant::now();
                 }
 
                 if world.dirty && last_rail_build.elapsed() >= Duration::from_secs(1) {
