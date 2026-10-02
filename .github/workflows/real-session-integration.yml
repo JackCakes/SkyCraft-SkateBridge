@@ -26,5 +26,7 @@ jobs:
           }
       - name: Check real session adapter
         run: cargo check -p skycraft-skate-real-session
+      - name: Check integrated host
+        run: cargo check -p skyrim-skate-host
       - name: Test session API and adapter
         run: cargo test -p skycraft-skate-session-api -p skycraft-skate-real-session
