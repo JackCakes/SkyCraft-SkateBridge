@@ -8,10 +8,16 @@ mod windows_host {
     use std::{
         collections::HashMap,
         ffi::c_void,
+        fs::{File, OpenOptions},
+        io::Write,
         mem::size_of,
+        path::PathBuf,
         ptr::{self, NonNull},
         slice,
-        sync::atomic::{AtomicU32, AtomicU64, Ordering},
+        sync::{
+            atomic::{AtomicU32, AtomicU64, Ordering},
+            Mutex, OnceLock,
+        },
         thread,
         time::{Duration, Instant},
     };
@@ -25,6 +31,49 @@ mod windows_host {
             Threading::GetCurrentProcessId,
         },
     };
+
+    static LOG_FILE: OnceLock<Mutex<Option<File>>> = OnceLock::new();
+
+    fn log_path() -> PathBuf {
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|dir| dir.join("SkyrimSkateHost.log")))
+            .unwrap_or_else(|| PathBuf::from("SkyrimSkateHost.log"))
+    }
+
+    fn init_log() {
+        let path = log_path();
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .ok();
+        let _ = LOG_FILE.set(Mutex::new(file));
+
+        log_line(format_args!(
+            "SkyrimSkateHost: log file {}",
+            path.display()
+        ));
+    }
+
+    fn log_line(args: std::fmt::Arguments<'_>) {
+        host_log!("{args}");
+        if let Some(lock) = LOG_FILE.get() {
+            if let Ok(mut slot) = lock.lock() {
+                if let Some(file) = slot.as_mut() {
+                    let _ = writeln!(file, "{args}");
+                    let _ = file.flush();
+                }
+            }
+        }
+    }
+
+    macro_rules! host_log {
+        ($($arg:tt)*) => {
+            log_line(format_args!($($arg)*))
+        };
+    }
 
     enum CollisionEvent {
         Clear(u32),
@@ -331,7 +380,8 @@ mod windows_host {
     }
 
     pub fn run() {
-        eprintln!("SkyrimSkateHost: waiting for {}", proto::MAPPING_NAME);
+        init_log();
+        host_log!("SkyrimSkateHost: waiting for {}", proto::MAPPING_NAME);
 
         loop {
             let Some(mapping) = Mapping::open() else {
@@ -340,13 +390,13 @@ mod windows_host {
             };
 
             if let Err(e) = mapping.validate() {
-                eprintln!("SkyrimSkateHost: {e}");
+                host_log!("SkyrimSkateHost: {e}");
                 thread::sleep(Duration::from_secs(1));
                 continue;
             }
 
             mapping.announce_host();
-            eprintln!("SkyrimSkateHost: connected");
+            host_log!("SkyrimSkateHost: connected");
 
             let mut world = CollisionWorld::default();
             let mut last_report = Instant::now();
@@ -379,7 +429,7 @@ mod windows_host {
                             match event {
                                 CollisionEvent::Clear(epoch) => {
                                     world.clear(epoch);
-                                    eprintln!(
+                                    host_log!(
                                         "SkyrimSkateHost: collision clear epoch={epoch}"
                                     );
                                 }
@@ -389,12 +439,12 @@ mod windows_host {
                             }
                         }
                     }
-                    Err(e) => eprintln!("SkyrimSkateHost: collision error: {e}"),
+                    Err(e) => host_log!("SkyrimSkateHost: collision error: {e}"),
                 }
 
                 if world.dirty && last_rail_build.elapsed() >= Duration::from_secs(1) {
                     let rails = world.rebuild_rails();
-                    eprintln!(
+                    host_log!(
                         "SkyrimSkateHost: rail scan tris={} edges={} lips={} runs={} rails={}",
                         rails.census.input_triangles,
                         rails.census.walkable_edges,
@@ -406,7 +456,7 @@ mod windows_host {
                 }
 
                 if last_report.elapsed() >= Duration::from_secs(2) {
-                    eprintln!(
+                    host_log!(
                         "SkyrimSkateHost: world={:#x} epoch={} mode={} regions={} triangles={} rails={}",
                         sky.world_id,
                         sky.collision_epoch,
@@ -421,7 +471,7 @@ mod windows_host {
                 let now = unsafe { GetTickCount64() };
                 let skyrim_beat = mapping.skyrim_heartbeat();
                 if skyrim_beat == 0 || now.saturating_sub(skyrim_beat) > 3000 {
-                    eprintln!("SkyrimSkateHost: Skyrim heartbeat lost; reconnecting");
+                    host_log!("SkyrimSkateHost: Skyrim heartbeat lost; reconnecting");
                     break;
                 }
 
