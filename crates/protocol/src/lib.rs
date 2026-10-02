@@ -37,6 +37,7 @@ pub const HOST_ON_GROUND: u32 = 1 << 3;
 pub const HOST_GRINDING: u32 = 1 << 4;
 pub const HOST_MANUAL: u32 = 1 << 5;
 pub const HOST_BAIL: u32 = 1 << 6;
+pub const HOST_CAMERA_VALID: u32 = 1 << 7;
 
 pub const INPUT_VALID: u32 = 1 << 0;
 pub const INPUT_KEYBOARD_FALLBACK: u32 = 1 << 1;
