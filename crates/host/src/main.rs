@@ -174,6 +174,18 @@ mod windows_host {
         session_world: session::WorldGeometry,
     }
 
+    fn same_collision_region(a: &[proto::CollisionTri], b: &[proto::CollisionTri]) -> bool {
+        a.len() == b.len()
+            && a.iter().zip(b).all(|(left, right)| {
+                left.flags == right.flags
+                    && left
+                        .v
+                        .iter()
+                        .zip(right.v.iter())
+                        .all(|(x, y)| x.to_bits() == y.to_bits())
+            })
+    }
+
     impl CollisionWorld {
         fn clear(&mut self, epoch: u32) {
             self.epoch = epoch;
@@ -214,6 +226,13 @@ mod windows_host {
                 .collect();
 
             let key = (region.rx, region.ry, region.rz);
+            if self
+                .regions
+                .get(&key)
+                .is_some_and(|old| same_collision_region(old, &finite))
+            {
+                return;
+            }
             if let Some(old) = self.regions.insert(key, finite) {
                 self.triangle_count = self.triangle_count.saturating_sub(old.len());
             }
