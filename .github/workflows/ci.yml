@@ -35,6 +35,19 @@ jobs:
           if (-not (Select-String -Path host.log -Pattern "rails=4" -Quiet)) {
             throw "rail detector did not find the 4 platform lips"
           }
+          $fileLog = ".\\target\\release\\SkyrimSkateHost.log"
+          if (-not (Test-Path $fileLog)) {
+            throw "SkyrimSkateHost.log was not created"
+          }
+          if (-not (Select-String -Path $fileLog -Pattern "SkyrimSkateHost: connected" -Quiet)) {
+            throw "file log is missing the connection event"
+          }
+          if (-not (Select-String -Path $fileLog -Pattern "triangles=2" -Quiet)) {
+            throw "file log is missing collision telemetry"
+          }
+          if (-not (Select-String -Path $fileLog -Pattern "rails=4" -Quiet)) {
+            throw "file log is missing rail telemetry"
+          }
       - name: Upload host prototype
         uses: actions/upload-artifact@v4
         with:
