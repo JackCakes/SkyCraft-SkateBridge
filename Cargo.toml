@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/protocol",
+    "crates/host",
+]
+
+[workspace.package]
+edition = "2024"
+version = "0.0.1"
+
+[workspace.dependencies]
+skycraft-skate-protocol = { path = "crates/protocol" }
