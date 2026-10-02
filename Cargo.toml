@@ -4,6 +4,7 @@ members = [
     "crates/protocol",
     "crates/geometry",
     "crates/session-api",
+    "crates/real-session-adapter",
     "crates/fake-skyrim",
     "crates/host",
 ]
@@ -16,3 +17,4 @@ version = "0.0.1"
 skycraft-skate-protocol = { path = "crates/protocol" }
 skycraft-skate-geometry = { path = "crates/geometry" }
 skycraft-skate-session-api = { path = "crates/session-api" }
+skycraft-skate-real-session = { path = "crates/real-session-adapter" }
