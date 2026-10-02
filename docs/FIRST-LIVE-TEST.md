@@ -28,6 +28,8 @@ SkyrimSkateHost: world=0x... epoch=... mode=0 regions=... triangles=... rails=..
 
 After F6, `mode=1` should appear. Pressing F6 again should return to `mode=0`.
 
+The host also writes the same telemetry to **`SkyrimSkateHost.log` beside `SkyrimSkateHost.exe`**. The file is replaced each time the host starts, so after a test you can upload that one file for analysis.
+
 ## Safe MO2 layout
 
 Install the prototype DLL as a **separate mod below the normal SkyCraft mod**:
