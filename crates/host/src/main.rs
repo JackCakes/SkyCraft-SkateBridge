@@ -51,15 +51,43 @@ mod windows_host {
         gamepad: XInputGamepad,
     }
 
-    #[link(name = "Xinput1_4")]
+    type XInputGetStateFn = unsafe extern "system" fn(u32, *mut XInputStateRaw) -> u32;
+    static XINPUT_GET_STATE: OnceLock<Option<XInputGetStateFn>> = OnceLock::new();
+
+    #[link(name = "kernel32")]
     unsafe extern "system" {
-        fn XInputGetState(user_index: u32, state: *mut XInputStateRaw) -> u32;
+        fn LoadLibraryW(file_name: *const u16) -> *mut c_void;
+        fn GetProcAddress(module: *mut c_void, proc_name: *const u8) -> *mut c_void;
+    }
+
+    fn xinput_get_state() -> Option<XInputGetStateFn> {
+        *XINPUT_GET_STATE.get_or_init(|| {
+            for dll in ["XInput1_4.dll", "XInput9_1_0.dll", "XInput1_3.dll"] {
+                let mut wide: Vec<u16> = dll.encode_utf16().collect();
+                wide.push(0);
+                let module = unsafe { LoadLibraryW(wide.as_ptr()) };
+                if module.is_null() {
+                    continue;
+                }
+                let proc = unsafe { GetProcAddress(module, b"XInputGetState\0".as_ptr()) };
+                if !proc.is_null() {
+                    // Keep the module loaded for process lifetime. The function pointer
+                    // remains valid and avoids a hard import-library dependency.
+                    let get_state = unsafe {
+                        std::mem::transmute::<*mut c_void, XInputGetStateFn>(proc)
+                    };
+                    return Some(get_state);
+                }
+            }
+            None
+        })
     }
 
     fn poll_xinput(frame_seconds: f32) -> Option<proto::InputState> {
+        let get_state = xinput_get_state()?;
         for user in 0..4 {
             let mut state = XInputStateRaw::default();
-            if unsafe { XInputGetState(user, &mut state) } == 0 {
+            if unsafe { get_state(user, &mut state) } == 0 {
                 return Some(proto::InputState {
                     flags: proto::INPUT_VALID,
                     buttons: state.gamepad.buttons,
