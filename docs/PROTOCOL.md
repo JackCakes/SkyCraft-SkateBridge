@@ -1,4 +1,4 @@
-# Live bridge protocol v2
+# Live bridge protocol v3
 
 Mapping: `Local\\SkyCraftSkate_v1`
 
@@ -11,6 +11,7 @@ The prototype keeps Skate transport separate from SkyCraft's existing Minecraft 
 - `0x0200`: host -> Skyrim `SkateState` seqlock
 - `0x0300`: Skyrim -> host `InputState` seqlock
 - `0x1000`: 16 MiB Skyrim -> host collision byte ring
+- immediately after the collision ring: host -> Skyrim 16 KiB skeletal `PoseFrame` section
 
 Coordinates are **SkyCraft MC-space**:
 
@@ -62,3 +63,17 @@ Retail Skate physics is still intentionally absent. The host now validates the c
 - the final finite position is handed back through SkyCraft's normal Minecraft teleport handshake.
 
 The synthetic controller is diagnostic plumbing only. It does not implement or approximate Skate tricks, grinds, ollies, carving, manuals, or bails.
+
+
+## Skeletal pose frame
+
+Protocol v3 separates high-rate animation from the small root/camera state.
+
+`PoseFrame` carries up to 128 bones. Each bone contains:
+
+- a 64-bit FNV-1a hash of its stable bone name,
+- one column-major 4x4 transform.
+
+The frame also carries the Skate simulation tick and a `name_set_id` so the Skyrim side can rebuild a retarget map only when the ordered skeleton changes. The synthetic harness currently publishes two diagnostic bones; the real Skate adapter will publish the `Pose.bones` + `Pose.names` returned by the reconstructed Session.
+
+The root transform remains represented in `SkateState` for authority safety. A malformed animation frame is ignored instead of taking down movement authority.
