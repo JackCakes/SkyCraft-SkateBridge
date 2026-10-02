@@ -5,7 +5,7 @@
 //! and metre-ish block units.
 
 pub use glam::Vec3;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub const GHOST_FLAG: u32 = 1 << 2;
 
@@ -62,12 +62,24 @@ pub struct RailResult {
 /// Ghost triangles are excluded because SkyCraft uses them only to describe the
 /// original surface behind dug-away geometry; they are not collision.
 pub fn find_rails(source: &[Triangle]) -> RailResult {
-    let tris: Vec<[Vec3; 3]> = source
+    // SkyCraft regions intentionally overlap slightly, so the same Havok face can
+    // be present in neighbouring region messages. Deduplicate before edge probing or
+    // those copies can look like tiny seams/extra rail candidates.
+    let mut seen = HashSet::new();
+    let mut tris = Vec::new();
+    for tri in source
         .iter()
         .copied()
         .filter(|t| t.flags & GHOST_FLAG == 0 && t.finite())
-        .map(|t| t.p)
-        .collect();
+    {
+        let mut key = tri
+            .p
+            .map(|v| v.to_array().map(|x| (x * 1000.0).round() as i32));
+        key.sort();
+        if seen.insert(key) {
+            tris.push(tri.p);
+        }
+    }
 
     let grid = Grid::build(&tris);
     let mut probe = Probe {
