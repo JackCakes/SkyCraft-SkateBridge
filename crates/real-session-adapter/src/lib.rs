@@ -3,15 +3,22 @@
 //! This crate contains no Skate 3 retail data. Construction succeeds at runtime
 //! only when the caller supplies a locally prepared data root from their own copy.
 
-use skate_host::bridge::{InputFrame, Session};
+use skate_host::bridge::{InputFrame, PreparedCollision, Session};
 use skycraft_skate_session_api as api;
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::mpsc,
+    thread,
+};
 
 pub struct RealSkateSession {
     data_root: PathBuf,
     session: Option<Session>,
     pending_world: Option<api::WorldGeometry>,
     installed_revision: u64,
+    requested_revision: u64,
+    build_send: Option<mpsc::Sender<api::WorldGeometry>>,
+    built_receive: Option<mpsc::Receiver<(u64, Result<PreparedCollision, String>)>>,
     accumulated: f32,
 }
 
@@ -44,6 +51,9 @@ impl RealSkateSession {
             session: None,
             pending_world: None,
             installed_revision: 0,
+            requested_revision: 0,
+            build_send: None,
+            built_receive: None,
             accumulated: 0.0,
         }
     }
@@ -90,24 +100,92 @@ impl RealSkateSession {
             input.packet,
         )
     }
+
+    fn ensure_collision_worker(&mut self) -> Result<(), String> {
+        if self.build_send.is_some() {
+            return Ok(());
+        }
+        let session = self
+            .session
+            .as_ref()
+            .ok_or("cannot start collision worker before Skate session exists")?;
+        let builder = session.collision_builder();
+        let (send, jobs) = mpsc::channel::<api::WorldGeometry>();
+        let (built_send, built_receive) =
+            mpsc::channel::<(u64, Result<PreparedCollision, String>)>();
+
+        thread::Builder::new()
+            .name("skyrim-skate-collision".into())
+            .spawn(move || {
+                while let Ok(mut world) = jobs.recv() {
+                    // Collapse queued world revisions so walking through Skyrim does
+                    // not make the collision worker build obsolete intermediate sets.
+                    while let Ok(newer) = jobs.try_recv() {
+                        world = newer;
+                    }
+                    let revision = world.revision;
+                    let result = builder.build(world.triangles, world.rails);
+                    if built_send.send((revision, result)).is_err() {
+                        break;
+                    }
+                }
+            })
+            .map_err(|error| format!("could not start Skate collision worker: {error}"))?;
+
+        self.build_send = Some(send);
+        self.built_receive = Some(built_receive);
+        Ok(())
+    }
+
+    fn install_prepared_collision(&mut self) -> Result<(), String> {
+        let Some(receive) = self.built_receive.as_ref() else {
+            return Ok(());
+        };
+
+        let mut newest = None;
+        loop {
+            match receive.try_recv() {
+                Ok(result) => newest = Some(result),
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err("Skate collision worker disconnected".into());
+                }
+            }
+        }
+
+        let Some((revision, prepared)) = newest else {
+            return Ok(());
+        };
+        let prepared = prepared?;
+        let session = self
+            .session
+            .as_mut()
+            .ok_or("Skate session disappeared before collision install")?;
+        session.install_collision(prepared)?;
+        self.installed_revision = revision;
+        Ok(())
+    }
 }
 
 impl api::SessionBackend for RealSkateSession {
     fn install_world(&mut self, world: api::WorldGeometry) -> Result<(), String> {
-        if world.revision == self.installed_revision {
+        if world.revision == self.installed_revision || world.revision == self.requested_revision {
             return Ok(());
         }
 
-        if let Some(session) = self.session.as_mut() {
-            let builder = session.collision_builder();
-            let prepared = builder.build(world.triangles, world.rails)?;
-            session.install_collision(prepared)?;
-            self.installed_revision = world.revision;
-        } else {
-            self.installed_revision = world.revision;
+        if self.session.is_none() {
+            self.requested_revision = world.revision;
             self.pending_world = Some(world);
+            return Ok(());
         }
-        Ok(())
+
+        self.ensure_collision_worker()?;
+        self.requested_revision = world.revision;
+        self.build_send
+            .as_ref()
+            .ok_or("Skate collision worker sender missing")?
+            .send(world)
+            .map_err(|_| "Skate collision worker disconnected".to_string())
     }
 
     fn activate(
@@ -121,6 +199,7 @@ impl api::SessionBackend for RealSkateSession {
                 .pending_world
                 .take()
                 .ok_or("real Skate session has no installed collision world")?;
+            let revision = world.revision;
             let mut session = Session::new(
                 &self.data_root,
                 world.triangles,
@@ -129,9 +208,13 @@ impl api::SessionBackend for RealSkateSession {
                 heading_radians,
             )?;
             session.set_aspect_ratio(aspect_ratio);
+            self.installed_revision = revision;
+            self.requested_revision = revision;
             self.session = Some(session);
+            self.ensure_collision_worker()?;
         }
 
+        self.install_prepared_collision()?;
         let session = self.session.as_mut().expect("session initialized above");
         session.set_aspect_ratio(aspect_ratio);
         self.accumulated = 0.0;
@@ -148,6 +231,7 @@ impl api::SessionBackend for RealSkateSession {
         frame_seconds: f32,
         aspect_ratio: f32,
     ) -> Result<api::SessionPose, String> {
+        self.install_prepared_collision()?;
         let session = self
             .session
             .as_mut()
