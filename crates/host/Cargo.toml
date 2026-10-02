@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 skycraft-skate-protocol.workspace = true
+skycraft-skate-geometry.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
