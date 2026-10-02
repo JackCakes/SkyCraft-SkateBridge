@@ -767,6 +767,47 @@ mod windows_host {
         }
     }
 
+    fn find_real_data_root() -> Option<PathBuf> {
+        let configured = std::env::var_os("SKYRIM_SKATE_DATA").map(PathBuf::from);
+        if let Some(path) = configured {
+            match RealSkateSession::resolve_data_root(&path) {
+                Ok(root) => {
+                    host_log!(
+                        "SkyrimSkateHost: real Skate data from SKYRIM_SKATE_DATA={} (resolved {})",
+                        path.display(),
+                        root.display()
+                    );
+                    return Some(root);
+                }
+                Err(error) => {
+                    host_log!("SkyrimSkateHost: SKYRIM_SKATE_DATA rejected: {error}");
+                    return None;
+                }
+            }
+        }
+
+        let local = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join("skate-data")));
+        if let Some(path) = local {
+            if path.exists() {
+                match RealSkateSession::resolve_data_root(&path) {
+                    Ok(root) => {
+                        host_log!(
+                            "SkyrimSkateHost: auto-detected local Skate data at {}",
+                            root.display()
+                        );
+                        return Some(root);
+                    }
+                    Err(error) => {
+                        host_log!("SkyrimSkateHost: local skate-data is incomplete: {error}");
+                    }
+                }
+            }
+        }
+        None
+    }
+
     fn start_real_preload(data_root: PathBuf) {
         let shown = data_root.display().to_string();
         match thread::Builder::new()
@@ -835,29 +876,14 @@ mod windows_host {
 
     pub fn run() {
         init_log();
-        let real_data_root = match std::env::var_os("SKYRIM_SKATE_DATA").map(PathBuf::from) {
-            Some(configured) => match RealSkateSession::resolve_data_root(&configured) {
-                Ok(root) => {
-                    host_log!(
-                        "SkyrimSkateHost: real Skate backend armed from SKYRIM_SKATE_DATA={} (resolved {})",
-                        configured.display(),
-                        root.display()
-                    );
-                    Some(root)
-                }
-                Err(error) => {
-                    host_log!("SkyrimSkateHost: SKYRIM_SKATE_DATA rejected: {error}");
-                    host_log!("SkyrimSkateHost: falling back to synthetic diagnostic backend");
-                    None
-                }
-            },
-            None => {
-                host_log!("SkyrimSkateHost: synthetic diagnostic backend (SKYRIM_SKATE_DATA not set)");
-                None
-            }
-        };
+        let real_data_root = find_real_data_root();
         if let Some(root) = real_data_root.as_ref() {
+            host_log!("SkyrimSkateHost: real Skate backend armed");
             start_real_preload(root.clone());
+        } else {
+            host_log!(
+                "SkyrimSkateHost: synthetic diagnostic backend (no valid local skate-data or SKYRIM_SKATE_DATA)"
+            );
         }
         host_log!("SkyrimSkateHost: waiting for {}", proto::MAPPING_NAME);
 
