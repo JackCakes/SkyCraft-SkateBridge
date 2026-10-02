@@ -5,7 +5,7 @@
 
 use skate_host::bridge::{InputFrame, Session};
 use skycraft_skate_session_api as api;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct RealSkateSession {
     data_root: PathBuf,
@@ -16,6 +16,28 @@ pub struct RealSkateSession {
 }
 
 impl RealSkateSession {
+    /// Accept either the converter's output folder or its nested `assets` folder,
+    /// and verify the stable minimum contract before the heavy Session load begins.
+    pub fn resolve_data_root(path: &Path) -> Result<PathBuf, String> {
+        let candidates = [path.to_path_buf(), path.join("assets")];
+        let required = [
+            "private/skater.glb",
+            "private/game.json",
+            "private/stock/physics-skeletons.json",
+            "private/stock/skater-collections.json",
+            "private/stock/data/config/input.cfg",
+        ];
+        for candidate in candidates {
+            if required.iter().all(|relative| candidate.join(relative).is_file()) {
+                return Ok(candidate);
+            }
+        }
+        Err(format!(
+            "prepared Skate data is incomplete at {} (expected private/game.json, skater.glb, stock physics/collections, and stock input.cfg; point SKYRIM_SKATE_DATA at the converter output or its assets folder)",
+            path.display()
+        ))
+    }
+
     pub fn new(data_root: PathBuf) -> Self {
         Self {
             data_root,
@@ -159,6 +181,16 @@ impl api::SessionBackend for RealSkateSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_data_root_fails_before_session_load() {
+        let missing = std::env::temp_dir().join(format!(
+            "skycraft-skate-missing-{}",
+            std::process::id()
+        ));
+        let error = RealSkateSession::resolve_data_root(&missing).unwrap_err();
+        assert!(error.contains("prepared Skate data is incomplete"));
+    }
 
     #[test]
     fn construction_does_not_touch_retail_data() {
