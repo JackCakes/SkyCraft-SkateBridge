@@ -15,3 +15,11 @@ jobs:
         run: cargo check --workspace
       - name: Cargo test
         run: cargo test --workspace
+      - name: Build host
+        run: cargo build --release -p skyrim-skate-host
+      - name: Upload host prototype
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkyrimSkateHost
+          path: target/release/skyrim-skate-host.exe
+          if-no-files-found: error
