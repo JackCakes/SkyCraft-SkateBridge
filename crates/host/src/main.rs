@@ -159,23 +159,27 @@ mod windows_host {
         geometry::Vec3::new(x, y, z)
     }
 
-    /// Diagnostic movement used only to prove authority handoff before retail-backed
-    /// Skate physics is available. It makes one small, smooth forward nudge from
-    /// the activation point and then holds there. It deliberately does NOT pretend
-    /// to be Skate physics.
+    /// Diagnostic controller used only to prove the complete transport/authority
+    /// path before retail-backed Skate physics is available. It consumes the same
+    /// XInput-shaped state the real Session expects, but movement is intentionally
+    /// simple and hard-bounded around the activation point.
     struct SyntheticController {
         active: bool,
         world_id: u32,
         epoch: u32,
         origin: [f64; 3],
+        pos: [f64; 3],
         yaw_deg: f32,
-        started: Instant,
+        camera_yaw_deg: f32,
+        camera_pitch_deg: f32,
         blocked_until_release: bool,
     }
 
     impl SyntheticController {
-        const NUDGE_BLOCKS: f64 = 0.60;
-        const NUDGE_SECONDS: f64 = 1.50;
+        const SPEED_BLOCKS_PER_SEC: f64 = 0.60;
+        const MAX_RADIUS_BLOCKS: f64 = 1.25;
+        const CAMERA_DISTANCE_BLOCKS: f64 = 2.5;
+        const CAMERA_HEIGHT_BLOCKS: f64 = 0.85;
 
         fn new() -> Self {
             Self {
@@ -183,8 +187,10 @@ mod windows_host {
                 world_id: 0,
                 epoch: 0,
                 origin: [0.0; 3],
+                pos: [0.0; 3],
                 yaw_deg: 0.0,
-                started: Instant::now(),
+                camera_yaw_deg: 0.0,
+                camera_pitch_deg: 8.0,
                 blocked_until_release: false,
             }
         }
@@ -208,7 +214,11 @@ mod windows_host {
             self.blocked_until_release |= block_until_release;
         }
 
-        fn update(&mut self, sky: &proto::SkyState) -> proto::SkateState {
+        fn update(
+            &mut self,
+            sky: &proto::SkyState,
+            input: Option<&proto::InputState>,
+        ) -> proto::SkateState {
             let requested = sky.requested_mode == proto::MODE_SKATE;
 
             if !requested {
@@ -227,8 +237,10 @@ mod windows_host {
                 self.world_id = sky.world_id;
                 self.epoch = sky.collision_epoch;
                 self.origin = [sky.x, sky.y, sky.z];
+                self.pos = self.origin;
                 self.yaw_deg = sky.yaw;
-                self.started = Instant::now();
+                self.camera_yaw_deg = sky.yaw;
+                self.camera_pitch_deg = 8.0;
                 host_log!(
                     "SkyrimSkateHost: synthetic authority acquired world={:#x} epoch={} origin=({:.3},{:.3},{:.3}) yaw={:.1}",
                     self.world_id,
@@ -249,27 +261,81 @@ mod windows_host {
             state.state_code = 0x5359_4E54; // "SYNT"
 
             if self.active {
-                let t = (self.started.elapsed().as_secs_f64() / Self::NUDGE_SECONDS)
-                    .clamp(0.0, 1.0);
-                // Smoothstep avoids a position discontinuity when authority first transfers.
-                let u = t * t * (3.0 - 2.0 * t);
-                let yaw = (self.yaw_deg as f64).to_radians();
-                let dx = -yaw.sin();
-                let dz = yaw.cos();
-                state.x = self.origin[0] + dx * Self::NUDGE_BLOCKS * u;
-                state.y = self.origin[1];
-                state.z = self.origin[2] + dz * Self::NUDGE_BLOCKS * u;
-                state.velocity = if t < 1.0 {
-                    let du_dt = (6.0 * t * (1.0 - t)) / Self::NUDGE_SECONDS;
-                    [
-                        (dx * Self::NUDGE_BLOCKS * du_dt) as f32,
-                        0.0,
-                        (dz * Self::NUDGE_BLOCKS * du_dt) as f32,
-                    ]
-                } else {
-                    [0.0; 3]
-                };
-                state.flags |= proto::HOST_ACTIVE;
+                let mut dt = 0.0_f64;
+                let mut lx = 0.0_f64;
+                let mut ly = 0.0_f64;
+                let mut rx = 0.0_f32;
+                let mut ry = 0.0_f32;
+                if let Some(input) = input.filter(|i| (i.flags & proto::INPUT_VALID) != 0) {
+                    if input.frame_seconds.is_finite() {
+                        dt = f64::from(input.frame_seconds.clamp(0.0, 0.1));
+                    }
+                    lx = f64::from(input.left[0]) / 32767.0;
+                    ly = f64::from(input.left[1]) / 32767.0;
+                    rx = f32::from(input.right[0]) / 32767.0;
+                    ry = f32::from(input.right[1]) / 32767.0;
+                }
+
+                let yaw = f64::from(self.yaw_deg).to_radians();
+                let right = [yaw.cos(), yaw.sin()];
+                let forward = [-yaw.sin(), yaw.cos()];
+                let vx = (right[0] * lx + forward[0] * ly) * Self::SPEED_BLOCKS_PER_SEC;
+                let vz = (right[1] * lx + forward[1] * ly) * Self::SPEED_BLOCKS_PER_SEC;
+
+                let mut nx = self.pos[0] + vx * dt;
+                let mut nz = self.pos[2] + vz * dt;
+                let ox = nx - self.origin[0];
+                let oz = nz - self.origin[2];
+                let radius = (ox * ox + oz * oz).sqrt();
+                if radius > Self::MAX_RADIUS_BLOCKS {
+                    let k = Self::MAX_RADIUS_BLOCKS / radius;
+                    nx = self.origin[0] + ox * k;
+                    nz = self.origin[2] + oz * k;
+                }
+                self.pos = [nx, self.origin[1], nz];
+
+                self.camera_yaw_deg =
+                    (self.camera_yaw_deg + rx * 120.0 * dt as f32).rem_euclid(360.0);
+                self.camera_pitch_deg =
+                    (self.camera_pitch_deg + ry * 90.0 * dt as f32).clamp(-55.0, 55.0);
+
+                state.x = self.pos[0];
+                state.y = self.pos[1];
+                state.z = self.pos[2];
+                state.velocity = [vx as f32, 0.0, vz as f32];
+                state.flags |= proto::HOST_ACTIVE | proto::HOST_CAMERA_VALID;
+
+                let cy = f64::from(self.camera_yaw_deg).to_radians();
+                let cp = f64::from(self.camera_pitch_deg).to_radians();
+                let cos_pitch = cp.cos();
+                let forward3 = [
+                    -cy.sin() * cos_pitch,
+                    cp.sin(),
+                    cy.cos() * cos_pitch,
+                ];
+                let right3 = [cy.cos(), 0.0, cy.sin()];
+                let up3 = [
+                    forward3[1] * right3[2] - forward3[2] * right3[1],
+                    forward3[2] * right3[0] - forward3[0] * right3[2],
+                    forward3[0] * right3[1] - forward3[1] * right3[0],
+                ];
+                let target = [
+                    self.pos[0],
+                    self.pos[1] + Self::CAMERA_HEIGHT_BLOCKS,
+                    self.pos[2],
+                ];
+                state.camera_pos = [
+                    target[0] - forward3[0] * Self::CAMERA_DISTANCE_BLOCKS,
+                    target[1] - forward3[1] * Self::CAMERA_DISTANCE_BLOCKS,
+                    target[2] - forward3[2] * Self::CAMERA_DISTANCE_BLOCKS,
+                ];
+                state.camera_forward = [
+                    forward3[0] as f32,
+                    forward3[1] as f32,
+                    forward3[2] as f32,
+                ];
+                state.camera_up = [up3[0] as f32, up3[1] as f32, up3[2] as f32];
+                state.fov_deg = 70.0;
             }
 
             state
@@ -365,6 +431,25 @@ mod windows_host {
 
         fn read_sky_state(&self) -> Option<proto::SkyState> {
             let src = unsafe { self.at::<proto::SkyState>(proto::OFF_SKY_STATE) };
+            for _ in 0..64 {
+                let seq = unsafe { &*ptr::addr_of!((*src).seq).cast::<AtomicU32>() };
+                let s1 = seq.load(Ordering::Acquire);
+                if s1 & 1 != 0 {
+                    std::hint::spin_loop();
+                    continue;
+                }
+
+                let snapshot = unsafe { ptr::read_volatile(src) };
+                std::sync::atomic::fence(Ordering::Acquire);
+                if seq.load(Ordering::Relaxed) == s1 {
+                    return Some(snapshot);
+                }
+            }
+            None
+        }
+
+        fn read_input_state(&self) -> Option<proto::InputState> {
+            let src = unsafe { self.at::<proto::InputState>(proto::OFF_INPUT_STATE) };
             for _ in 0..64 {
                 let seq = unsafe { &*ptr::addr_of!((*src).seq).cast::<AtomicU32>() };
                 let s1 = seq.load(Ordering::Acquire);
@@ -530,7 +615,8 @@ mod windows_host {
 
                 // Retail Skate data is not available yet. Use the intentionally tiny
                 // diagnostic controller to prove movement authority and hand-back safely.
-                let state = synthetic.update(&sky);
+                let input = mapping.read_input_state();
+                let state = synthetic.update(&sky, input.as_ref());
                 mapping.write_host_state(state);
 
                 match mapping.drain_collision() {
@@ -566,15 +652,35 @@ mod windows_host {
                 }
 
                 if last_report.elapsed() >= Duration::from_secs(2) {
-                    host_log!(
-                        "SkyrimSkateHost: world={:#x} epoch={} mode={} regions={} triangles={} rails={}",
-                        sky.world_id,
-                        sky.collision_epoch,
-                        sky.requested_mode,
-                        world.regions.len(),
-                        world.triangle_count,
-                        world.rail_count
-                    );
+                    if let Some(input) = input.as_ref() {
+                        host_log!(
+                            "SkyrimSkateHost: world={:#x} epoch={} mode={} regions={} triangles={} rails={} input_packet={} buttons=0x{:04x} left=({}, {}) right=({}, {}) triggers=({}, {})",
+                            sky.world_id,
+                            sky.collision_epoch,
+                            sky.requested_mode,
+                            world.regions.len(),
+                            world.triangle_count,
+                            world.rail_count,
+                            input.packet,
+                            input.buttons,
+                            input.left[0],
+                            input.left[1],
+                            input.right[0],
+                            input.right[1],
+                            input.triggers[0],
+                            input.triggers[1]
+                        );
+                    } else {
+                        host_log!(
+                            "SkyrimSkateHost: world={:#x} epoch={} mode={} regions={} triangles={} rails={} input=unavailable",
+                            sky.world_id,
+                            sky.collision_epoch,
+                            sky.requested_mode,
+                            world.regions.len(),
+                            world.triangle_count,
+                            world.rail_count
+                        );
+                    }
                     last_report = Instant::now();
                 }
 
