@@ -7,11 +7,12 @@ use core::mem::size_of;
 
 pub const MAPPING_NAME: &str = r"Local\SkyCraftSkate_v1";
 pub const MAGIC: u32 = 0x4B53_4353; // bytes: "SCSK"
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 pub const OFF_HEADER: usize = 0x0000;
 pub const OFF_SKY_STATE: usize = 0x0100;
 pub const OFF_SKATE_STATE: usize = 0x0200;
+pub const OFF_INPUT_STATE: usize = 0x0300;
 pub const OFF_COLLISION_RING: usize = 0x1000;
 
 pub const COLLISION_RING_BYTES: usize = 16 << 20;
@@ -36,6 +37,9 @@ pub const HOST_ON_GROUND: u32 = 1 << 3;
 pub const HOST_GRINDING: u32 = 1 << 4;
 pub const HOST_MANUAL: u32 = 1 << 5;
 pub const HOST_BAIL: u32 = 1 << 6;
+
+pub const INPUT_VALID: u32 = 1 << 0;
+pub const INPUT_KEYBOARD_FALLBACK: u32 = 1 << 1;
 
 pub const COL_PAD: u32 = 0;
 pub const COL_CLEAR: u32 = 1;
@@ -111,6 +115,24 @@ pub struct SkateState {
     pub state_code: u32,
 }
 const _: [(); 128] = [(); size_of::<SkateState>()];
+
+/// XInput-shaped controller snapshot from Skyrim. The raw layout intentionally
+/// matches what the retail-backed Skate Session eventually consumes.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct InputState {
+    /// Seqlock: odd while Skyrim writes, even when stable.
+    pub seq: u32,
+    pub flags: u32,
+    pub buttons: u16,
+    pub triggers: [u8; 2],
+    pub left: [i16; 2],
+    pub right: [i16; 2],
+    pub packet: u32,
+    pub frame_seconds: f32,
+    pub reserved: [u32; 9],
+}
+const _: [(); 64] = [(); size_of::<InputState>()];
 
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug)]
