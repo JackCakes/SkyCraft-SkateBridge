@@ -4,6 +4,10 @@ on:
   push:
     branches: ["main", "prototype/**"]
 
+concurrency:
+  group: skate-bridge-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   rust:
     runs-on: windows-latest
