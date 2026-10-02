@@ -30,3 +30,11 @@ jobs:
         run: cargo check -p skyrim-skate-host
       - name: Test session API and adapter
         run: cargo test -p skycraft-skate-session-api -p skycraft-skate-real-session
+      - name: Build integrated host release
+        run: cargo build --release -p skyrim-skate-host
+      - name: Upload integrated host
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkyrimSkateHost-real-session
+          path: target/release/skyrim-skate-host.exe
+          if-no-files-found: error
