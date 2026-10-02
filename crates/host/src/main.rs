@@ -800,7 +800,7 @@ mod windows_host {
                 }
                 Err(error) => {
                     host_log!("SkyrimSkateHost: SKYRIM_SKATE_DATA rejected: {error}");
-                    return None;
+                    host_log!("SkyrimSkateHost: checking portable skate-data beside the executable");
                 }
             }
         }
