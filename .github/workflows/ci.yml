@@ -15,8 +15,27 @@ jobs:
         run: cargo check --workspace
       - name: Cargo test
         run: cargo test --workspace
-      - name: Build host
-        run: cargo build --release -p skyrim-skate-host
+      - name: Build integration binaries
+        run: cargo build --release -p skyrim-skate-host -p skycraft-skate-fake-skyrim
+      - name: Shared-memory integration smoke test
+        shell: pwsh
+        run: |
+          $host = Start-Process .\target\release\skyrim-skate-host.exe -PassThru -RedirectStandardError host.log -RedirectStandardOutput host-out.log
+          Start-Sleep -Milliseconds 500
+          .\target\release\skycraft-skate-fake-skyrim.exe
+          Start-Sleep -Seconds 2
+          if (-not $host.HasExited) { Stop-Process -Id $host.Id -Force }
+          Write-Host "--- host stderr ---"
+          Get-Content host.log
+          if (-not (Select-String -Path host.log -Pattern "SkyrimSkateHost: connected" -Quiet)) {
+            throw "host never connected to fake Skyrim"
+          }
+          if (-not (Select-String -Path host.log -Pattern "triangles=2" -Quiet)) {
+            throw "host did not retain the 2 test triangles"
+          }
+          if (-not (Select-String -Path host.log -Pattern "rails=4" -Quiet)) {
+            throw "rail detector did not find the 4 platform lips"
+          }
       - name: Upload host prototype
         uses: actions/upload-artifact@v4
         with:
