@@ -3,15 +3,17 @@ compile_error!("skyrim-skate-host currently targets Windows only.");
 
 #[cfg(windows)]
 mod windows_host {
+    use skycraft_skate_geometry::{self as geometry, Triangle};
     use skycraft_skate_protocol as proto;
     use std::{
+        collections::HashMap,
         ffi::c_void,
         mem::size_of,
         ptr::{self, NonNull},
         slice,
         sync::atomic::{AtomicU32, AtomicU64, Ordering},
         thread,
-        time::Duration,
+        time::{Duration, Instant},
     };
     use windows_sys::Win32::{
         Foundation::{CloseHandle, HANDLE},
@@ -22,6 +24,90 @@ mod windows_host {
             Threading::{GetCurrentProcessId, GetTickCount64},
         },
     };
+
+    enum CollisionEvent {
+        Clear(u32),
+        Region(proto::CollisionRegion, Vec<proto::CollisionTri>),
+    }
+
+    #[derive(Default)]
+    struct CollisionWorld {
+        epoch: u32,
+        world_id: u32,
+        regions: HashMap<(i32, i32, i32), Vec<proto::CollisionTri>>,
+        dirty: bool,
+        triangle_count: usize,
+        rail_count: usize,
+    }
+
+    impl CollisionWorld {
+        fn clear(&mut self, epoch: u32) {
+            self.epoch = epoch;
+            self.world_id = 0;
+            self.regions.clear();
+            self.dirty = true;
+            self.triangle_count = 0;
+            self.rail_count = 0;
+        }
+
+        fn replace_region(
+            &mut self,
+            region: proto::CollisionRegion,
+            tris: Vec<proto::CollisionTri>,
+        ) {
+            // A clear normally precedes a new world. Be defensive if the producer
+            // races a reconnect and a region arrives first.
+            if self.epoch == 0 || region.epoch != self.epoch || self.world_id == 0 {
+                if self.epoch != 0 && region.epoch != self.epoch {
+                    self.regions.clear();
+                    self.triangle_count = 0;
+                    self.rail_count = 0;
+                }
+                self.epoch = region.epoch;
+                self.world_id = region.world_id;
+            }
+
+            if region.epoch != self.epoch || region.world_id != self.world_id {
+                return;
+            }
+
+            let finite: Vec<_> = tris
+                .into_iter()
+                .filter(|t| t.v.iter().all(|v| v.is_finite()))
+                .collect();
+
+            let key = (region.rx, region.ry, region.rz);
+            if let Some(old) = self.regions.insert(key, finite) {
+                self.triangle_count = self.triangle_count.saturating_sub(old.len());
+            }
+            self.triangle_count += self.regions.get(&key).map_or(0, Vec::len);
+            self.dirty = true;
+        }
+
+        fn rebuild_rails(&mut self) -> geometry::RailResult {
+            let mut input = Vec::with_capacity(self.triangle_count);
+            for tris in self.regions.values() {
+                for tri in tris {
+                    input.push(Triangle {
+                        p: [
+                            glam_vec(tri.v[0], tri.v[1], tri.v[2]),
+                            glam_vec(tri.v[3], tri.v[4], tri.v[5]),
+                            glam_vec(tri.v[6], tri.v[7], tri.v[8]),
+                        ],
+                        flags: tri.flags,
+                    });
+                }
+            }
+            let result = geometry::find_rails(&input);
+            self.rail_count = result.rails.len();
+            self.dirty = false;
+            result
+        }
+    }
+
+    fn glam_vec(x: f32, y: f32, z: f32) -> glam::Vec3 {
+        glam::Vec3::new(x, y, z)
+    }
 
     struct Mapping {
         handle: HANDLE,
@@ -61,7 +147,9 @@ mod windows_host {
 
         fn validate(&self) -> Result<(), String> {
             let h = unsafe { &*self.at::<proto::Header>(proto::OFF_HEADER) };
-            let magic = unsafe { (&*ptr::addr_of!(h.magic).cast::<AtomicU32>()).load(Ordering::Acquire) };
+            let magic = unsafe {
+                (&*ptr::addr_of!(h.magic).cast::<AtomicU32>()).load(Ordering::Acquire)
+            };
             if magic != proto::MAGIC {
                 return Err(format!("mapping magic mismatch: {magic:#010x}"));
             }
@@ -100,6 +188,14 @@ mod windows_host {
             }
         }
 
+        fn skyrim_heartbeat(&self) -> u64 {
+            let h = unsafe { &*self.at::<proto::Header>(proto::OFF_HEADER) };
+            unsafe {
+                (&*ptr::addr_of!(h.skyrim_heartbeat_ms).cast::<AtomicU64>())
+                    .load(Ordering::Acquire)
+            }
+        }
+
         fn read_sky_state(&self) -> Option<proto::SkyState> {
             let src = unsafe { self.at::<proto::SkyState>(proto::OFF_SKY_STATE) };
             for _ in 0..64 {
@@ -119,14 +215,13 @@ mod windows_host {
             None
         }
 
-        fn write_host_state(&self, mut state: proto::SkateState) {
+        fn write_host_state(&self, state: proto::SkateState) {
             let dst = unsafe { self.at::<proto::SkateState>(proto::OFF_SKATE_STATE) };
             let seq = unsafe { &*ptr::addr_of!((*dst).seq).cast::<AtomicU32>() };
             let s = seq.load(Ordering::Relaxed);
             seq.store(s.wrapping_add(1), Ordering::Relaxed);
             std::sync::atomic::fence(Ordering::Release);
 
-            state.seq = s.wrapping_add(1);
             unsafe {
                 ptr::copy_nonoverlapping(
                     (&state as *const proto::SkateState).cast::<u8>().add(4),
@@ -138,11 +233,7 @@ mod windows_host {
             seq.store(s.wrapping_add(2), Ordering::Release);
         }
 
-        fn drain_collision(
-            &self,
-            mut on_clear: impl FnMut(u32),
-            mut on_region: impl FnMut(proto::CollisionRegion, &[proto::CollisionTri]),
-        ) -> Result<(), String> {
+        fn drain_collision(&self) -> Result<Vec<CollisionEvent>, String> {
             let ring = unsafe { self.base.as_ptr().add(proto::OFF_COLLISION_RING) };
             let head = unsafe {
                 (&*ring
@@ -157,6 +248,7 @@ mod windows_host {
             };
             let mut tail = tail_atomic.load(Ordering::Relaxed);
             let data = unsafe { ring.add(proto::COLLISION_RING_DATA_OFF) };
+            let mut events = Vec::new();
 
             while tail < head {
                 let pos = (tail as usize) % proto::COLLISION_RING_DATA_BYTES;
@@ -169,6 +261,16 @@ mod windows_host {
                     continue;
                 }
 
+                let total = size_of::<proto::CollisionMessageHeader>()
+                    .checked_add(hdr.payload_bytes as usize)
+                    .ok_or("collision message length overflow")?;
+                if total > proto::COLLISION_RING_DATA_BYTES {
+                    return Err(format!("collision message too large: {total}"));
+                }
+                if pos + total > proto::COLLISION_RING_DATA_BYTES {
+                    return Err("collision message crossed ring end without pad".into());
+                }
+
                 let payload = unsafe { data.add(pos + size_of::<proto::CollisionMessageHeader>()) };
                 match hdr.kind {
                     proto::COL_CLEAR => {
@@ -176,7 +278,7 @@ mod windows_host {
                             return Err("bad collision clear payload".into());
                         }
                         let epoch = unsafe { ptr::read_unaligned(payload.cast::<u32>()) };
-                        on_clear(epoch);
+                        events.push(CollisionEvent::Clear(epoch));
                     }
                     proto::COL_REGION_TRIS => {
                         if hdr.payload_bytes < size_of::<proto::CollisionRegion>() as u32 {
@@ -185,7 +287,8 @@ mod windows_host {
                         let region = unsafe {
                             ptr::read_unaligned(payload.cast::<proto::CollisionRegion>())
                         };
-                        let tri_bytes = hdr.payload_bytes as usize - size_of::<proto::CollisionRegion>();
+                        let tri_bytes =
+                            hdr.payload_bytes as usize - size_of::<proto::CollisionRegion>();
                         if tri_bytes != region.count as usize * size_of::<proto::CollisionTri>() {
                             return Err(format!(
                                 "collision region size mismatch: count={} bytes={tri_bytes}",
@@ -200,19 +303,16 @@ mod windows_host {
                                 region.count as usize,
                             )
                         };
-                        on_region(region, tris);
+                        events.push(CollisionEvent::Region(region, tris.to_vec()));
                     }
                     other => return Err(format!("unknown collision message type {other}")),
                 }
 
-                let bytes = proto::align8(
-                    size_of::<proto::CollisionMessageHeader>() + hdr.payload_bytes as usize,
-                );
-                tail += bytes as u64;
+                tail += proto::align8(total) as u64;
             }
 
             tail_atomic.store(tail, Ordering::Release);
-            Ok(())
+            Ok(events)
         }
     }
 
@@ -247,9 +347,9 @@ mod windows_host {
             mapping.announce_host();
             eprintln!("SkyrimSkateHost: connected");
 
-            let mut region_messages = 0_u64;
-            let mut triangles = 0_u64;
-            let mut last_report = GetTickCount64();
+            let mut world = CollisionWorld::default();
+            let mut last_report = Instant::now();
+            let mut last_rail_build = Instant::now() - Duration::from_secs(2);
 
             loop {
                 mapping.heartbeat();
@@ -259,58 +359,66 @@ mod windows_host {
                     continue;
                 };
 
+                // Safe placeholder until retail-backed Skate Session is wired in:
+                // publish the current Skyrim pose but never move it.
                 let mut state = proto::SkateState::default();
                 state.flags = proto::HOST_READY;
-                // Until the real Skate Session is connected, echo the start pose.
-                // This lets us validate ABI, heartbeats and authority plumbing first.
                 state.x = sky.x;
                 state.y = sky.y;
                 state.z = sky.z;
                 state.quat = [0.0, 0.0, 0.0, 1.0];
-
                 if sky.requested_mode == proto::MODE_SKATE {
                     state.flags |= proto::HOST_ACTIVE;
                 }
                 mapping.write_host_state(state);
 
-                if let Err(e) = mapping.drain_collision(
-                    |epoch| {
-                        region_messages = 0;
-                        triangles = 0;
-                        eprintln!("SkyrimSkateHost: collision clear epoch={epoch}");
-                    },
-                    |region, tris| {
-                        region_messages += 1;
-                        triangles += tris.len() as u64;
-                        if !tris.iter().all(|t| t.v.iter().all(|v| v.is_finite())) {
-                            eprintln!(
-                                "SkyrimSkateHost: non-finite collision in region ({},{},{})",
-                                region.rx, region.ry, region.rz
-                            );
+                match mapping.drain_collision() {
+                    Ok(events) => {
+                        for event in events {
+                            match event {
+                                CollisionEvent::Clear(epoch) => {
+                                    world.clear(epoch);
+                                    eprintln!(
+                                        "SkyrimSkateHost: collision clear epoch={epoch}"
+                                    );
+                                }
+                                CollisionEvent::Region(region, tris) => {
+                                    world.replace_region(region, tris);
+                                }
+                            }
                         }
-                    },
-                ) {
-                    eprintln!("SkyrimSkateHost: collision error: {e}");
+                    }
+                    Err(e) => eprintln!("SkyrimSkateHost: collision error: {e}"),
                 }
 
-                let now = GetTickCount64();
-                if now - last_report >= 2000 {
+                if world.dirty && last_rail_build.elapsed() >= Duration::from_secs(1) {
+                    let rails = world.rebuild_rails();
                     eprintln!(
-                        "SkyrimSkateHost: world={:#x} epoch={} mode={} regions={} triangles={}",
+                        "SkyrimSkateHost: rail scan tris={} edges={} lips={} runs={} rails={}",
+                        rails.census.input_triangles,
+                        rails.census.walkable_edges,
+                        rails.census.lips,
+                        rails.census.runs,
+                        rails.census.rails
+                    );
+                    last_rail_build = Instant::now();
+                }
+
+                if last_report.elapsed() >= Duration::from_secs(2) {
+                    eprintln!(
+                        "SkyrimSkateHost: world={:#x} epoch={} mode={} regions={} triangles={} rails={}",
                         sky.world_id,
                         sky.collision_epoch,
                         sky.requested_mode,
-                        region_messages,
-                        triangles
+                        world.regions.len(),
+                        world.triangle_count,
+                        world.rail_count
                     );
-                    last_report = now;
+                    last_report = Instant::now();
                 }
 
-                let header = unsafe { &*mapping.at::<proto::Header>(proto::OFF_HEADER) };
-                let skyrim_beat = unsafe {
-                    (&*ptr::addr_of!(header.skyrim_heartbeat_ms).cast::<AtomicU64>())
-                        .load(Ordering::Acquire)
-                };
+                let now = unsafe { GetTickCount64() };
+                let skyrim_beat = mapping.skyrim_heartbeat();
                 if skyrim_beat == 0 || now.saturating_sub(skyrim_beat) > 3000 {
                     eprintln!("SkyrimSkateHost: Skyrim heartbeat lost; reconnecting");
                     break;
