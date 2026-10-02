@@ -120,6 +120,13 @@ impl RealSkateSession {
         }
     }
 
+    fn validate_aspect_ratio(aspect_ratio: f32) -> Result<(), String> {
+        if !aspect_ratio.is_finite() || aspect_ratio <= 0.0 {
+            return Err("real Skate session received an invalid viewport aspect ratio".into());
+        }
+        Ok(())
+    }
+
     fn validate_world(world: &api::WorldGeometry) -> Result<(), String> {
         let triangles_finite = world
             .triangles
@@ -329,6 +336,7 @@ impl api::SessionBackend for RealSkateSession {
         aspect_ratio: f32,
     ) -> Result<api::SessionPose, String> {
         Self::validate_activation(spawn, heading_radians)?;
+        Self::validate_aspect_ratio(aspect_ratio)?;
 
         if self.session.is_none() {
             let world = self
@@ -371,6 +379,7 @@ impl api::SessionBackend for RealSkateSession {
         frame_seconds: f32,
         aspect_ratio: f32,
     ) -> Result<api::SessionPose, String> {
+        Self::validate_aspect_ratio(aspect_ratio)?;
         self.install_prepared_collision()?;
         let session = self
             .session
@@ -492,6 +501,16 @@ mod tests {
         assert_eq!(RealSkateSession::sanitize_frame_seconds(1.0), 0.1);
         assert_eq!(RealSkateSession::sanitize_frame_seconds(f32::NAN), 0.0);
         assert_eq!(RealSkateSession::sanitize_frame_seconds(f32::INFINITY), 0.0);
+    }
+
+    #[test]
+    fn viewport_aspect_ratio_must_be_positive_and_finite() {
+        assert!(RealSkateSession::validate_aspect_ratio(16.0 / 9.0).is_ok());
+        assert!(RealSkateSession::validate_aspect_ratio(1.0).is_ok());
+        assert!(RealSkateSession::validate_aspect_ratio(0.0).is_err());
+        assert!(RealSkateSession::validate_aspect_ratio(-1.0).is_err());
+        assert!(RealSkateSession::validate_aspect_ratio(f32::NAN).is_err());
+        assert!(RealSkateSession::validate_aspect_ratio(f32::INFINITY).is_err());
     }
 
     #[test]
