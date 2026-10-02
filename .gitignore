@@ -1,0 +1,30 @@
+# Retail / generated proprietary game data
+retail-data/
+skate-data/
+assets/private/
+**/assets/private/
+*.iso
+*.xex
+
+# Local configuration / conversion outputs
+.env
+.env.*
+!*.example
+conversion.log
+*.partial/
+
+# Build outputs
+build/
+target/
+out/
+dist/
+*.pdb
+*.dll
+*.exe
+
+# IDE / OS
+.vs/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
