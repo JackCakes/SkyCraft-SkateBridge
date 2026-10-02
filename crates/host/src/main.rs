@@ -20,8 +20,8 @@ mod windows_host {
         ptr::{self, NonNull},
         slice,
         sync::{
-            atomic::{AtomicU32, AtomicU64, Ordering},
-            Mutex, OnceLock,
+            atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+            Arc, Mutex, OnceLock,
         },
         thread,
         time::{Duration, Instant},
@@ -766,6 +766,43 @@ mod windows_host {
         }
     }
 
+    fn start_process_heartbeat() -> Option<(Arc<AtomicBool>, thread::JoinHandle<()>)> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_thread = Arc::clone(&stop);
+        let handle = thread::Builder::new()
+            .name("skyrim-skate-heartbeat".into())
+            .spawn(move || {
+                // Session::new can decode/load enough retail-backed data to take
+                // several seconds. Keep process liveness independent of that work,
+                // just as Skyrim's side keeps its heartbeat independent of Present.
+                while !stop_thread.load(Ordering::Acquire) {
+                    let Some(mapping) = Mapping::open() else {
+                        thread::sleep(Duration::from_millis(100));
+                        continue;
+                    };
+                    if mapping.validate().is_err() {
+                        thread::sleep(Duration::from_millis(100));
+                        continue;
+                    }
+                    mapping.announce_host();
+                    while !stop_thread.load(Ordering::Acquire) {
+                        mapping.heartbeat();
+                        thread::sleep(Duration::from_millis(500));
+
+                        // If Skyrim recreated the mapping (restart/new process), reopen
+                        // rather than writing liveness forever into a stale view.
+                        let now = unsafe { GetTickCount64() };
+                        let sky = mapping.skyrim_heartbeat();
+                        if sky == 0 || now.saturating_sub(sky) > 5000 {
+                            break;
+                        }
+                    }
+                }
+            })
+            .ok()?;
+        Some((stop, handle))
+    }
+
     pub fn run() {
         init_log();
         let real_data_root = std::env::var_os("SKYRIM_SKATE_DATA").map(PathBuf::from);
@@ -793,6 +830,11 @@ mod windows_host {
 
             mapping.announce_host();
             host_log!("SkyrimSkateHost: connected");
+
+            let process_heartbeat = start_process_heartbeat();
+            if process_heartbeat.is_none() {
+                host_log!("SkyrimSkateHost: warning: independent heartbeat thread could not start");
+            }
 
             let mut world = CollisionWorld::default();
             let mut synthetic = SyntheticController::new();
@@ -955,6 +997,11 @@ mod windows_host {
                 }
 
                 thread::sleep(Duration::from_millis(4));
+            }
+
+            if let Some((stop, handle)) = process_heartbeat {
+                stop.store(true, Ordering::Release);
+                let _ = handle.join();
             }
         }
     }
