@@ -129,7 +129,7 @@ mod fake {
 
         fn publish_platform(&self) {
             let epoch = 1_u32;
-            self.push(proto::COL_CLEAR, &epoch.to_ne_bytes());
+            self.push(proto::COL_CLEAR, &epoch.to_le_bytes());
 
             let region = proto::CollisionRegion {
                 rx: 0,
