@@ -8,6 +8,7 @@ mod real_controller;
 mod windows_host {
     use crate::real_controller::RealController;
     use skycraft_skate_geometry::{self as geometry, Triangle};
+    use skycraft_skate_real_session::RealSkateSession;
     use skycraft_skate_protocol as proto;
     use skycraft_skate_session_api as session;
     use std::{
@@ -805,15 +806,27 @@ mod windows_host {
 
     pub fn run() {
         init_log();
-        let real_data_root = std::env::var_os("SKYRIM_SKATE_DATA").map(PathBuf::from);
-        if let Some(root) = real_data_root.as_ref() {
-            host_log!(
-                "SkyrimSkateHost: real Skate backend armed from SKYRIM_SKATE_DATA={}",
-                root.display()
-            );
-        } else {
-            host_log!("SkyrimSkateHost: synthetic diagnostic backend (SKYRIM_SKATE_DATA not set)");
-        }
+        let real_data_root = match std::env::var_os("SKYRIM_SKATE_DATA").map(PathBuf::from) {
+            Some(configured) => match RealSkateSession::resolve_data_root(&configured) {
+                Ok(root) => {
+                    host_log!(
+                        "SkyrimSkateHost: real Skate backend armed from SKYRIM_SKATE_DATA={} (resolved {})",
+                        configured.display(),
+                        root.display()
+                    );
+                    Some(root)
+                }
+                Err(error) => {
+                    host_log!("SkyrimSkateHost: SKYRIM_SKATE_DATA rejected: {error}");
+                    host_log!("SkyrimSkateHost: falling back to synthetic diagnostic backend");
+                    None
+                }
+            },
+            None => {
+                host_log!("SkyrimSkateHost: synthetic diagnostic backend (SKYRIM_SKATE_DATA not set)");
+                None
+            }
+        };
         host_log!("SkyrimSkateHost: waiting for {}", proto::MAPPING_NAME);
 
         loop {
