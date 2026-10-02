@@ -98,6 +98,14 @@ pub trait SessionBackend {
     fn suspend(&mut self);
 }
 
+/// Convert SkyCraft/Minecraft yaw degrees to the Skate session's Y-up heading.
+///
+/// Minecraft yaw 0 faces +Z, +90 faces -X. A positive right-handed Y rotation
+/// sends +Z toward +X, so Skate heading is the negative Minecraft yaw.
+pub fn mc_yaw_to_session_heading(yaw_degrees: f32) -> f32 {
+    -yaw_degrees.to_radians()
+}
+
 pub fn fnv1a64(name: &str) -> u64 {
     let mut hash = 0xcbf29ce484222325_u64;
     for byte in name.as_bytes() {
@@ -118,6 +126,15 @@ mod tests {
             0.0, 0.0, 1.0, 0.0,
             0.0, 0.0, 0.0, 1.0,
         ]
+    }
+
+    #[test]
+    fn minecraft_yaw_matches_session_cardinals() {
+        let eps = 1.0e-6;
+        assert!((mc_yaw_to_session_heading(0.0) - 0.0).abs() < eps);
+        assert!((mc_yaw_to_session_heading(90.0) + std::f32::consts::FRAC_PI_2).abs() < eps);
+        assert!((mc_yaw_to_session_heading(-90.0) - std::f32::consts::FRAC_PI_2).abs() < eps);
+        assert!((mc_yaw_to_session_heading(180.0) + std::f32::consts::PI).abs() < eps);
     }
 
     #[test]
