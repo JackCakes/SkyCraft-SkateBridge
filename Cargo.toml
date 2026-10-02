@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/protocol",
     "crates/geometry",
+    "crates/fake-skyrim",
     "crates/host",
 ]
 
