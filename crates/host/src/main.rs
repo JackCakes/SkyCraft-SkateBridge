@@ -188,6 +188,49 @@ mod windows_host {
         geometry::Vec3::new(x, y, z)
     }
 
+    fn fnv1a64(name: &str) -> u64 {
+        let mut hash = 0xcbf29ce484222325_u64;
+        for byte in name.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash
+    }
+
+    fn identity_matrix() -> [f32; 16] {
+        [
+            1.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        ]
+    }
+
+    fn synthetic_pose_frame(state: &proto::SkateState, input: Option<&proto::InputState>) -> proto::PoseFrame {
+        let mut pose = proto::PoseFrame::default();
+        if (state.flags & proto::HOST_ACTIVE) == 0 {
+            return pose;
+        }
+
+        pose.flags = proto::POSE_VALID;
+        pose.tick = input.map_or(0, |i| u64::from(i.packet));
+        pose.bone_count = 2;
+        let root_hash = fnv1a64("synthetic_root");
+        let board_hash = fnv1a64("synthetic_board");
+        pose.name_set_id = (root_hash ^ board_hash) as u32;
+        pose.bones[0] = proto::BonePose {
+            name_hash: root_hash,
+            matrix: identity_matrix(),
+        };
+        let mut board = identity_matrix();
+        board[13] = -0.05;
+        pose.bones[1] = proto::BonePose {
+            name_hash: board_hash,
+            matrix: board,
+        };
+        pose
+    }
+
     /// Diagnostic controller used only to prove the complete transport/authority
     /// path before retail-backed Skate physics is available. It consumes the same
     /// XInput-shaped state the real Session expects, but movement is intentionally
@@ -514,6 +557,24 @@ mod windows_host {
             seq.store(s.wrapping_add(2), Ordering::Release);
         }
 
+        fn write_pose_frame(&self, frame: &proto::PoseFrame) {
+            let dst = unsafe { self.at::<proto::PoseFrame>(proto::OFF_POSE_FRAME) };
+            let seq = unsafe { &*ptr::addr_of!((*dst).seq).cast::<AtomicU32>() };
+            let s = seq.load(Ordering::Relaxed);
+            seq.store(s.wrapping_add(1), Ordering::Relaxed);
+            std::sync::atomic::fence(Ordering::Release);
+
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    (frame as *const proto::PoseFrame).cast::<u8>().add(4),
+                    dst.cast::<u8>().add(4),
+                    size_of::<proto::PoseFrame>() - 4,
+                );
+            }
+
+            seq.store(s.wrapping_add(2), Ordering::Release);
+        }
+
         fn drain_collision(&self) -> Result<Vec<CollisionEvent>, String> {
             let ring = unsafe { self.base.as_ptr().add(proto::OFF_COLLISION_RING) };
             let head = unsafe {
@@ -648,6 +709,8 @@ mod windows_host {
                 let input = mapping.read_input_state();
                 let state = synthetic.update(&sky, input.as_ref());
                 mapping.write_host_state(state);
+                let pose = synthetic_pose_frame(&state, input.as_ref());
+                mapping.write_pose_frame(&pose);
 
                 match mapping.drain_collision() {
                     Ok(events) => {
