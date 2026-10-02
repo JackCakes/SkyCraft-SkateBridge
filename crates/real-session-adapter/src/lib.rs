@@ -9,6 +9,7 @@ use std::{
     path::{Path, PathBuf},
     sync::mpsc,
     thread,
+    time::Duration,
 };
 
 pub struct RealSkateSession {
@@ -137,6 +138,38 @@ impl RealSkateSession {
         Ok(())
     }
 
+    fn wait_for_requested_collision(&mut self) -> Result<(), String> {
+        if self.requested_revision == self.installed_revision {
+            return Ok(());
+        }
+        let receive = self
+            .built_receive
+            .as_ref()
+            .ok_or("Skate collision worker receiver missing during activation")?;
+
+        while self.installed_revision != self.requested_revision {
+            let (revision, prepared) = receive
+                .recv_timeout(Duration::from_secs(30))
+                .map_err(|error| match error {
+                    mpsc::RecvTimeoutError::Timeout => format!(
+                        "timed out preparing Skate collision revision {}",
+                        self.requested_revision
+                    ),
+                    mpsc::RecvTimeoutError::Disconnected => {
+                        "Skate collision worker disconnected during activation".to_string()
+                    }
+                })?;
+            let prepared = prepared?;
+            let session = self
+                .session
+                .as_mut()
+                .ok_or("Skate session disappeared before collision install")?;
+            session.install_collision(prepared)?;
+            self.installed_revision = revision;
+        }
+        Ok(())
+    }
+
     fn install_prepared_collision(&mut self) -> Result<(), String> {
         let Some(receive) = self.built_receive.as_ref() else {
             return Ok(());
@@ -214,6 +247,10 @@ impl api::SessionBackend for RealSkateSession {
             self.ensure_collision_worker()?;
         }
 
+        // If this is a retained Session being reactivated after a Skyrim
+        // world/epoch change, do not start it on the previous world's collision.
+        // Heartbeat runs independently, so waiting here cannot look like host death.
+        self.wait_for_requested_collision()?;
         self.install_prepared_collision()?;
         let session = self.session.as_mut().expect("session initialized above");
         session.set_aspect_ratio(aspect_ratio);
