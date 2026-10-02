@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+exclude = ["third_party/iw4l-skate/skate"]
 members = [
     "crates/protocol",
     "crates/geometry",
