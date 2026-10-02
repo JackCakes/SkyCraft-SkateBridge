@@ -19,11 +19,11 @@ jobs:
       - name: Shared-memory integration smoke test
         shell: pwsh
         run: |
-          $host = Start-Process .\target\release\skyrim-skate-host.exe -PassThru -RedirectStandardError host.log -RedirectStandardOutput host-out.log
+          $hostProc = Start-Process .\target\release\skyrim-skate-host.exe -PassThru -RedirectStandardError host.log -RedirectStandardOutput host-out.log
           Start-Sleep -Milliseconds 500
           .\target\release\skycraft-skate-fake-skyrim.exe
           Start-Sleep -Seconds 2
-          if (-not $host.HasExited) { Stop-Process -Id $host.Id -Force }
+          if (-not $hostProc.HasExited) { Stop-Process -Id $hostProc.Id -Force }
           Write-Host "--- host stderr ---"
           Get-Content host.log
           if (-not (Select-String -Path host.log -Pattern "SkyrimSkateHost: connected" -Quiet)) {
