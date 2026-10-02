@@ -1,0 +1,6 @@
+[package]
+name = "skycraft-skate-session-api"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

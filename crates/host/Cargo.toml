@@ -1,0 +1,17 @@
+[package]
+name = "skyrim-skate-host"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+skycraft-skate-protocol.workspace = true
+skycraft-skate-geometry.workspace = true
+skycraft-skate-session-api.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+    "Win32_System_SystemInformation",
+] }

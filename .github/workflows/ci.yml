@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "prototype/**"]
+
+concurrency:
+  group: skate-bridge-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cargo check
+        run: cargo check --workspace
+      - name: Cargo test
+        run: cargo test --workspace
+      - name: Build integration binaries
+        run: cargo build --release -p skyrim-skate-host -p skycraft-skate-fake-skyrim
+      - name: Shared-memory integration smoke test
+        shell: pwsh
+        run: |
+          $hostProc = Start-Process .\target\release\skyrim-skate-host.exe -PassThru -RedirectStandardError host.log -RedirectStandardOutput host-out.log
+          Start-Sleep -Milliseconds 500
+          .\target\release\skycraft-skate-fake-skyrim.exe
+          Start-Sleep -Seconds 2
+          if (-not $hostProc.HasExited) { Stop-Process -Id $hostProc.Id -Force }
+          Write-Host "--- host stderr ---"
+          Get-Content host.log
+          if (-not (Select-String -Path host.log -Pattern "SkyrimSkateHost: connected" -Quiet)) {
+            throw "host never connected to fake Skyrim"
+          }
+          if (-not (Select-String -Path host.log -Pattern "triangles=2" -Quiet)) {
+            throw "host did not retain the 2 test triangles"
+          }
+          if (-not (Select-String -Path host.log -Pattern "rails=4" -Quiet)) {
+            throw "rail detector did not find the 4 platform lips"
+          }
+          $fileLog = ".\\target\\release\\SkyrimSkateHost.log"
+          if (-not (Test-Path $fileLog)) {
+            throw "SkyrimSkateHost.log was not created"
+          }
+          if (-not (Select-String -Path $fileLog -Pattern "SkyrimSkateHost: connected" -Quiet)) {
+            throw "file log is missing the connection event"
+          }
+          if (-not (Select-String -Path $fileLog -Pattern "triangles=2" -Quiet)) {
+            throw "file log is missing collision telemetry"
+          }
+          if (-not (Select-String -Path $fileLog -Pattern "rails=4" -Quiet)) {
+            throw "file log is missing rail telemetry"
+          }
+      - name: Upload host prototype
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkyrimSkateHost
+          path: target/release/skyrim-skate-host.exe
+          if-no-files-found: error
