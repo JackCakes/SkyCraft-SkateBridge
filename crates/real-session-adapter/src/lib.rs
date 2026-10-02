@@ -110,6 +110,12 @@ impl RealSkateSession {
         distance != 0 && distance < (1_u64 << 63)
     }
 
+    fn prepared_revision_is_useful(&self, revision: u64) -> bool {
+        revision == self.requested_revision
+            || Self::revision_is_newer(revision, self.installed_revision)
+                && Self::revision_is_newer(self.requested_revision, revision)
+    }
+
     fn ensure_collision_worker(&mut self) -> Result<(), String> {
         if self.build_send.is_some() {
             return Ok(());
@@ -167,6 +173,13 @@ impl RealSkateSession {
                         "Skate collision worker disconnected during activation".to_string()
                     }
                 })?;
+            // A build can finish after a newer world was requested. Ignore any
+            // completion that would move collision backwards; obsolete build
+            // failures are irrelevant as well because the requested build is
+            // still queued behind them.
+            if !self.prepared_revision_is_useful(revision) {
+                continue;
+            }
             let prepared = prepared?;
             let session = self
                 .session
@@ -197,6 +210,9 @@ impl RealSkateSession {
         let Some((revision, prepared)) = newest else {
             return Ok(());
         };
+        if !self.prepared_revision_is_useful(revision) {
+            return Ok(());
+        }
         let prepared = prepared?;
         let session = self
             .session
@@ -359,5 +375,29 @@ mod tests {
         assert!(RealSkateSession::revision_is_newer(0, u64::MAX));
         assert!(!RealSkateSession::revision_is_newer(u64::MAX, 0));
         assert!(!RealSkateSession::revision_is_newer(7, 7));
+    }
+
+    #[test]
+    fn prepared_collision_never_rolls_installed_world_back() {
+        let mut adapter = RealSkateSession::new(PathBuf::from("not-present-in-ci"));
+        adapter.installed_revision = 10;
+        adapter.requested_revision = 12;
+
+        assert!(!adapter.prepared_revision_is_useful(9));
+        assert!(!adapter.prepared_revision_is_useful(10));
+        assert!(adapter.prepared_revision_is_useful(11));
+        assert!(adapter.prepared_revision_is_useful(12));
+        assert!(!adapter.prepared_revision_is_useful(13));
+    }
+
+    #[test]
+    fn prepared_collision_order_handles_revision_wrap() {
+        let mut adapter = RealSkateSession::new(PathBuf::from("not-present-in-ci"));
+        adapter.installed_revision = u64::MAX;
+        adapter.requested_revision = 1;
+
+        assert!(adapter.prepared_revision_is_useful(0));
+        assert!(adapter.prepared_revision_is_useful(1));
+        assert!(!adapter.prepared_revision_is_useful(u64::MAX - 1));
     }
 }
