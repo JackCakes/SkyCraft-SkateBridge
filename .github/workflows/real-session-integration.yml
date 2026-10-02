@@ -1,0 +1,30 @@
+name: Real Skate session integration
+
+on:
+  push:
+    branches: ["integration/real-skate-session"]
+  workflow_dispatch:
+
+concurrency:
+  group: real-skate-session-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compile:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify pinned mashup snapshot
+        shell: pwsh
+        run: |
+          $actual = git -C third_party/iw4l-skate rev-parse HEAD
+          if ($actual -ne "f608f85e407ff1b7689d54a9aafdd16e95711ac4") {
+            throw "unexpected IW4L Skate snapshot: $actual"
+          }
+      - name: Check real session adapter
+        run: cargo check -p skycraft-skate-real-session
+      - name: Test session API and adapter
+        run: cargo test -p skycraft-skate-session-api -p skycraft-skate-real-session
