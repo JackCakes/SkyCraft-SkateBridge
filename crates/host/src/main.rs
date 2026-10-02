@@ -5,6 +5,7 @@ compile_error!("skyrim-skate-host currently targets Windows only.");
 mod windows_host {
     use skycraft_skate_geometry::{self as geometry, Triangle};
     use skycraft_skate_protocol as proto;
+    use skycraft_skate_session_api as session;
     use std::{
         collections::HashMap,
         ffi::c_void,
@@ -165,9 +166,7 @@ mod windows_host {
         dirty: bool,
         triangle_count: usize,
         rail_count: usize,
-        revision: u64,
-        session_triangles: Vec<[[f32; 3]; 3]>,
-        session_rails: Vec<Vec<[f32; 3]>>,
+        session_world: session::WorldGeometry,
     }
 
     impl CollisionWorld {
@@ -178,9 +177,9 @@ mod windows_host {
             self.dirty = true;
             self.triangle_count = 0;
             self.rail_count = 0;
-            self.revision = self.revision.wrapping_add(1);
-            self.session_triangles.clear();
-            self.session_rails.clear();
+            self.session_world.session_world.revision = self.session_world.session_world.revision.wrapping_add(1);
+            self.session_world.triangles.clear();
+            self.session_world.rails.clear();
         }
 
         fn replace_region(
@@ -260,17 +259,17 @@ mod windows_host {
             // CollisionBuilder consumes. MC-space is already metres-ish and Y-up,
             // so the eventual session adapter only needs the single documented
             // basis/scale conversion rather than another geometry extraction pass.
-            self.session_triangles = input
+            self.session_world.triangles = input
                 .iter()
                 .map(|tri| tri.p.map(|p| p.to_array()))
                 .collect();
-            self.session_rails = result
+            self.session_world.rails = result
                 .rails
                 .iter()
                 .map(|rail| rail.iter().map(|p| p.to_array()).collect())
                 .collect();
-            self.rail_count = self.session_rails.len();
-            self.revision = self.revision.wrapping_add(1);
+            self.rail_count = self.session_world.rails.len();
+            self.session_world.session_world.revision = self.session_world.session_world.revision.wrapping_add(1);
             self.dirty = false;
             result
         }
@@ -889,10 +888,10 @@ mod windows_host {
                             sky.world_id,
                             sky.collision_epoch,
                             sky.requested_mode,
-                            world.revision,
+                            world.session_world.revision,
                             world.regions.len(),
                             world.triangle_count,
-                            world.session_triangles.len(),
+                            world.session_world.triangles.len(),
                             world.rail_count,
                             input_source,
                             input.packet,
@@ -910,10 +909,10 @@ mod windows_host {
                             sky.world_id,
                             sky.collision_epoch,
                             sky.requested_mode,
-                            world.revision,
+                            world.session_world.revision,
                             world.regions.len(),
                             world.triangle_count,
-                            world.session_triangles.len(),
+                            world.session_world.triangles.len(),
                             world.rail_count
                         );
                     }
