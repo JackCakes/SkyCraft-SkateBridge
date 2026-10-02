@@ -6,17 +6,18 @@ It is **not** intended to approximate Skate 3. Its only purpose is to prove that
 
 ## Gating
 
-The harness must remain disabled by default and require an explicit developer switch. Normal F6 transport testing remains non-moving until that switch is enabled.
+The harness is confined to the separate experimental SKSE override + prototype host. In that test build, **F6** is the explicit developer switch. The normal upstream SkyCraft installation remains untouched; disabling the MO2 override removes the harness completely.
 
 ## What the synthetic controller will do
 
 While active it will use the live collision cache to provide a deliberately simple diagnostic pose:
 
-- keep the player on/near the current ground,
-- accept basic forward/turn input,
+- start at the exact current player position,
+- accept the live XInput-shaped transport (currently with a keyboard fallback),
+- move only inside a hard 1.25-block radius around the activation point,
 - publish a finite root transform,
 - publish a simple chase camera,
-- stop immediately if collision, heartbeat, or state becomes invalid.
+- stop immediately if heartbeat, menus/loading, world/epoch, death, takeover, or output validity becomes unsafe.
 
 It will not implement ollies, tricks, grinds, carving, manuals, bails, or Skate physics.
 
